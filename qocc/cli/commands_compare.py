@@ -4,46 +4,52 @@ from __future__ import annotations
 
 import json
 import sys
+import warnings
 
 import click
 from rich.console import Console
 
 console = Console()
+_err_console = Console(stderr=True)
 
 
-@click.command("compare")
-@click.argument("bundle_a", type=click.Path(exists=True))
-@click.argument("bundle_b", type=click.Path(exists=True))
-@click.option("--report", "-r", "report_dir", type=click.Path(), default=None,
-              help="Output directory for reports.")
-@click.option("--format", "-f", "output_format", type=click.Choice(["text", "json"]),
-              default="text", help="Output format: text (default) or json.")
-def compare(bundle_a: str, bundle_b: str, report_dir: str | None, output_format: str) -> None:
-    """Compare two Trace Bundles and highlight differences."""
+def _run_compare(
+    bundle_a: str,
+    bundle_b: str,
+    report_dir: str | None,
+    output_format: str,
+) -> None:
+    """Core comparison logic shared by ``trace compare`` and the legacy alias."""
     from qocc.api import compare_bundles
 
-    console.print("[bold blue]QOCC Bundle Comparison[/bold blue]")
-    console.print(f"  Bundle A: {bundle_a}")
-    console.print(f"  Bundle B: {bundle_b}")
+    # In JSON mode every human-readable message goes to stderr so stdout is
+    # pure, machine-parseable JSON.
+    out = _err_console if output_format == "json" else console
+
+    out.print("[bold blue]QOCC Bundle Comparison[/bold blue]")
+    out.print(f"  Bundle A: {bundle_a}")
+    out.print(f"  Bundle B: {bundle_b}")
 
     try:
         result = compare_bundles(bundle_a, bundle_b, report_dir=report_dir)
     except Exception as exc:
-        console.print(f"[red]Error:[/red] {exc}")
+        out.print(f"[red]Error:[/red] {exc}")
         sys.exit(1)
 
-    # JSON output mode — emit *only* JSON, no Rich decoration
+    # ── JSON output ────────────────────────────────────────────
     if output_format == "json":
         json_str = json.dumps(result, indent=2, default=str)
-        click.echo(json_str)
+        click.echo(json_str)  # stdout only
         if report_dir:
             from pathlib import Path
+
             Path(report_dir).mkdir(parents=True, exist_ok=True)
             (Path(report_dir) / "comparison.json").write_text(
-                json.dumps(result, indent=2, default=str) + "\n", encoding="utf-8"
+                json_str + "\n", encoding="utf-8",
             )
         return
 
+    # ── Text output ────────────────────────────────────────────
     diffs = result.get("diffs", {})
     metrics_diff = diffs.get("metrics", {})
     env_diff = diffs.get("environment", {})
@@ -68,3 +74,35 @@ def compare(bundle_a: str, bundle_b: str, report_dir: str | None, output_format:
 
     if report_dir:
         console.print(f"\n[green]Reports written to {report_dir}/[/green]")
+
+
+@click.command("compare")
+@click.argument("bundle_a", type=click.Path(exists=True))
+@click.argument("bundle_b", type=click.Path(exists=True))
+@click.option("--report", "-r", "report_dir", type=click.Path(), default=None,
+              help="Output directory for reports.")
+@click.option("--format", "-f", "output_format", type=click.Choice(["text", "json"]),
+              default="text", help="Output format: text (default) or json.")
+def compare(bundle_a: str, bundle_b: str, report_dir: str | None,
+            output_format: str) -> None:
+    """Compare two Trace Bundles and highlight differences."""
+    _run_compare(bundle_a, bundle_b, report_dir, output_format)
+
+
+# ── Backward-compatible top-level alias (deprecated) ──────────
+@click.command("compare", hidden=False,
+               deprecated=True)
+@click.argument("bundle_a", type=click.Path(exists=True))
+@click.argument("bundle_b", type=click.Path(exists=True))
+@click.option("--report", "-r", "report_dir", type=click.Path(), default=None,
+              help="Output directory for reports.")
+@click.option("--format", "-f", "output_format", type=click.Choice(["text", "json"]),
+              default="text", help="Output format: text (default) or json.")
+def compare_legacy(bundle_a: str, bundle_b: str, report_dir: str | None,
+                   output_format: str) -> None:
+    """Compare two Trace Bundles (DEPRECATED — use ``qocc trace compare``)."""
+    _err_console.print(
+        "[yellow]Warning:[/yellow] 'qocc compare' is deprecated. "
+        "Use 'qocc trace compare' instead.",
+    )
+    _run_compare(bundle_a, bundle_b, report_dir, output_format)

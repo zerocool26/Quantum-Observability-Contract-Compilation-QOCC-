@@ -46,7 +46,7 @@ def render_timeline(
             "name": s.get("name", "?"),
             "start": float(start),
             "end": float(end),
-            "parent_id": s.get("parent_id"),
+            "parent_id": s.get("parent_span_id") or s.get("parent_id"),
             "span_id": s.get("span_id", ""),
             "attributes": s.get("attributes", {}),
             "status": s.get("status", "ok"),

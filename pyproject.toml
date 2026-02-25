@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Quantum Observability + Contract-Based Compilation — trace-first, vendor-agnostic layer for quantum workflows"
 readme = "README.md"
 license = { text = "Apache-2.0" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [{ name = "QOCC Contributors" }]
 keywords = ["quantum", "observability", "compilation", "contracts", "tracing"]
 classifiers = [
@@ -23,7 +23,6 @@ dependencies = [
     "click>=8.1",
     "jsonschema>=4.20",
     "numpy>=1.24",
-    "pydantic>=2.5",
     "rich>=13.0",
 ]
 

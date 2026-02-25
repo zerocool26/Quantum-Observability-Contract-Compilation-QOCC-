@@ -13,9 +13,10 @@ from __future__ import annotations
 import click
 
 from qocc.cli.commands_trace import trace
-from qocc.cli.commands_compare import compare
+from qocc.cli.commands_compare import compare_legacy
 from qocc.cli.commands_contract import contract
 from qocc.cli.commands_search import compile_group
+from qocc.cli.commands_validate import validate
 
 
 @click.group()
@@ -25,9 +26,10 @@ def cli() -> None:
 
 
 cli.add_command(trace)
-cli.add_command(compare)
+cli.add_command(compare_legacy, "compare")  # deprecated alias
 cli.add_command(contract)
 cli.add_command(compile_group)
+cli.add_command(validate)
 
 
 if __name__ == "__main__":

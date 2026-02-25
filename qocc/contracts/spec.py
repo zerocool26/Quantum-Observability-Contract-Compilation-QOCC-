@@ -56,8 +56,17 @@ class ContractSpec:
     evaluator: str = "auto"
 
     def __post_init__(self) -> None:
-        # Flag invalid types; evaluation layer handles them gracefully
+        # Validate type; warn on unknown types
         self._type_valid = ContractType.is_valid(self.type) or self.evaluator != "auto"
+        if not self._type_valid:
+            import warnings
+
+            warnings.warn(
+                f"Unknown contract type {self.type!r}. "
+                f"Valid types: {', '.join(sorted(VALID_CONTRACT_TYPES))}. "
+                f"Set evaluator= for custom types.",
+                stacklevel=2,
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {

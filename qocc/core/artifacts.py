@@ -125,13 +125,29 @@ class ArtifactStore:
 
     @staticmethod
     def load_bundle(path: str | Path) -> dict[str, Any]:
-        """Load a bundle from a zip or directory and return parsed standard files."""
+        """Load a bundle from a zip or directory and return parsed standard files.
+
+        When loading a zip, contents are extracted to a unique temporary
+        directory under the zip's parent.  **ZipSlip protection** rejects
+        any archive member whose resolved path escapes the extraction root.
+        """
         path = Path(path)
         if path.suffix == ".zip":
-            extract_dir = path.with_suffix("")
+            # Use a unique extraction directory to avoid clobbering siblings
+            extract_dir = path.with_suffix("") / f"_qocc_{os.getpid()}"
             if extract_dir.exists():
                 shutil.rmtree(extract_dir)
+            extract_dir.mkdir(parents=True, exist_ok=True)
+
             with zipfile.ZipFile(path, "r") as zf:
+                # ZipSlip protection: reject paths that escape extract_dir
+                resolved_root = extract_dir.resolve()
+                for member in zf.namelist():
+                    target = (extract_dir / member).resolve()
+                    if not str(target).startswith(str(resolved_root)):
+                        raise ValueError(
+                            f"Unsafe zip member rejected (ZipSlip): {member!r}"
+                        )
                 zf.extractall(extract_dir)
             path = extract_dir
 

@@ -1,7 +1,7 @@
 # QOCC — Quantum Observability + Contract-Based Compilation
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
 **QOCC** is a vendor-agnostic, reproducible, trace-first layer that instruments quantum program workflows end-to-end and supports contract-defined correctness + cost optimization via closed-loop compilation/search.
 
@@ -199,7 +199,7 @@ qocc trace compare bundle.zip replayed.zip --report diff/
 
 ```bash
 pip install -e ".[dev]"
-pytest                 # ~233 tests
+pytest                 # ~303 tests
 ruff check .
 mypy qocc/
 ```

@@ -7,6 +7,7 @@ Supports iterative early stopping: when the statistical result is conclusive
 
 from __future__ import annotations
 
+import time
 from typing import Any, Callable
 
 from qocc.contracts.spec import ContractResult, ContractSpec
@@ -61,12 +62,17 @@ def _iterative_evaluate(
     min_shots = int(spec.resource_budget.get("min_shots", 0))
     max_shots = int(spec.resource_budget.get("max_shots", 0))
     early_stop = spec.resource_budget.get("early_stopping", False)
+    max_runtime: float | None = None
+    _rt = spec.resource_budget.get("max_runtime")
+    if _rt is not None:
+        max_runtime = float(_rt)
 
     # Fast path: no iterative budget configured or no simulator
     if not early_stop or max_shots <= 0 or simulate_fn is None:
         return evaluate_once(spec, counts_before, counts_after)
 
     # Iterative path
+    t0 = time.monotonic()
     current_shots = max(min_shots, sum(counts_before.values()))
     total_shots_used = current_shots
     last_result = evaluate_once(spec, counts_before, counts_after)
@@ -82,6 +88,14 @@ def _iterative_evaluate(
     # Iterate: double shots each time
     next_shots = current_shots * 2
     while next_shots <= max_shots:
+        # Enforce wall-clock budget
+        if max_runtime is not None and (time.monotonic() - t0) >= max_runtime:
+            last_result.details["early_stopped"] = True
+            last_result.details["stopping_method"] = "max_runtime"
+            last_result.details["total_shots"] = total_shots_used
+            last_result.details["budget_exceeded"] = "max_runtime"
+            return last_result
+
         try:
             new_counts = simulate_fn(next_shots)
         except Exception:

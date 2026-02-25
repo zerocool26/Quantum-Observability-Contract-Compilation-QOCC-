@@ -52,6 +52,9 @@ def run_trace(
         Dictionary with bundle metadata and file path.
     """
     # Setup
+    if repeat < 1:
+        raise ValueError(f"repeat must be >= 1, got {repeat}")
+
     run_id = uuid.uuid4().hex[:12]
     emitter = TraceEmitter()
 
@@ -432,6 +435,7 @@ def check_contract(
     adapter_name: str | None = None,
     simulation_shots: int = 1024,
     simulation_seed: int = 42,
+    max_memory_mb: float | None = None,
 ) -> list[dict[str, Any]]:
     """Evaluate contracts against a bundle or circuits.
 
@@ -448,6 +452,8 @@ def check_contract(
         adapter_name: Adapter to use for simulation (inferred from bundle if None).
         simulation_shots: Default shots for distribution contracts.
         simulation_seed: Default seed for simulation.
+        max_memory_mb: Optional peak-memory cap (MiB). If evaluation exceeds this
+            budget the ``_budget`` metadata key is set in results.
 
     Returns:
         List of contract result dicts.
@@ -456,6 +462,7 @@ def check_contract(
     from qocc.contracts.eval_sampling import (
         evaluate_distribution_contract,
         evaluate_observable_contract,
+        _counts_to_observable_values,
     )
     from qocc.contracts.eval_exact import (
         evaluate_exact_equivalence,
@@ -577,6 +584,13 @@ def check_contract(
         else:
             sim_counts_input = _run_sim(input_handle)
             sim_counts_compiled = _run_sim(compiled_handle)
+
+    # ── Memory tracking (tracemalloc) ────────────────────────
+    import tracemalloc as _tm
+
+    _tm_was_tracing = _tm.is_tracing()
+    if max_memory_mb is not None and not _tm_was_tracing:
+        _tm.start()
 
     for spec in specs:
         result: ContractResult
@@ -708,20 +722,27 @@ def check_contract(
 
         results.append(result.to_dict())
 
+        # ── Post-evaluation memory budget check ──────────────
+        if max_memory_mb is not None and _tm.is_tracing():
+            _current, _peak = _tm.get_traced_memory()
+            peak_mb = _peak / (1024 * 1024)
+            results[-1]["_budget"] = {"peak_memory_mb": round(peak_mb, 2)}
+            if peak_mb > max_memory_mb:
+                results[-1]["_budget"]["exceeded"] = True
+                logger.warning(
+                    "Memory budget exceeded: %.1f MiB > %.1f MiB (contract %s)",
+                    peak_mb, max_memory_mb, spec.name,
+                )
+
+    # Stop tracemalloc if we started it
+    if max_memory_mb is not None:
+        try:
+            if _tm.is_tracing() and not _tm_was_tracing:
+                _tm.stop()
+        except Exception:
+            pass
+
     return results
-
-
-def _counts_to_observable_values(counts: dict[str, int]) -> list[float]:
-    """Convert measurement counts to Z-observable per-shot values.
-
-    Each bitstring maps to: +1 if parity(bitstring) == 0, else -1.
-    """
-    values: list[float] = []
-    for bitstring, count in counts.items():
-        parity = sum(int(b) for b in bitstring) % 2
-        val = 1.0 if parity == 0 else -1.0
-        values.extend([val] * count)
-    return values
 
 
 def _evaluate_cost_contract(
@@ -838,6 +859,10 @@ def search_compile(
     from qocc.trace.emitter import TraceEmitter
     from qocc.contracts.spec import ContractSpec
 
+    # ── Validate inputs ──────────────────────────────────────
+    if top_k < 1:
+        raise ValueError(f"top_k must be >= 1, got {top_k}")
+
     emitter = TraceEmitter()
     adapter = get_adapter(adapter_name)
 
@@ -884,22 +909,24 @@ def search_compile(
     cache = CompilationCache()
     cache_index: list[dict[str, Any]] = []
 
-    def _compile_one_candidate(candidate: Any, parent_span_id: str | None = None) -> tuple[Any, Any, list[dict[str, Any]]]:
+    def _compile_one_candidate(candidate: Any, parent_span: Any | None = None) -> tuple[Any, Any, list[dict[str, Any]]]:
         """Compile a single candidate and return (candidate, handle, cache_entries).
 
-        Creates a per-candidate span linked to *parent_span_id*.
+        Creates a per-candidate span as a true child of *parent_span*
+        (correct parent_span_id) **and** adds a link for cross-reference.
         """
         local_cache_entries: list[dict[str, Any]] = []
         cand_span = emitter.start_span(
             f"compile/candidate/{candidate.candidate_id[:8]}",
+            parent=parent_span,
             attributes={
                 "candidate_id": candidate.candidate_id,
                 "pipeline": str(candidate.pipeline.to_dict()),
             },
         )
-        # Link back to the parent compile span
-        if parent_span_id:
-            cand_span.add_link(emitter.trace_id, parent_span_id, relationship="child_of_batch")
+        # Keep a link too — useful when spans are filtered by trace viewers
+        if parent_span is not None:
+            cand_span.add_link(emitter.trace_id, parent_span.span_id, relationship="child_of_batch")
         try:
             c_key = CompilationCache.cache_key(
                 circuit_hash=normalized.stable_hash(),
@@ -953,12 +980,11 @@ def search_compile(
         import concurrent.futures
 
         max_workers = min(len(candidates), os.cpu_count() or 4, 8)
-        parent_sid = compile_parent.span_id
 
         if len(candidates) > 1 and max_workers > 1:
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
                 futures = {
-                    pool.submit(_compile_one_candidate, c, parent_sid): c
+                    pool.submit(_compile_one_candidate, c, compile_parent): c
                     for c in candidates
                 }
                 for future in concurrent.futures.as_completed(futures):
@@ -969,7 +995,7 @@ def search_compile(
         else:
             # Serial fallback for single candidate
             for candidate in candidates:
-                cand, compiled_handle, c_entries = _compile_one_candidate(candidate, parent_sid)
+                cand, compiled_handle, c_entries = _compile_one_candidate(candidate, compile_parent)
                 cache_index.extend(c_entries)
                 if compiled_handle is not None:
                     circuit_handles[cand.candidate_id] = compiled_handle
@@ -982,10 +1008,16 @@ def search_compile(
         ranked = rank_candidates(candidates)
         span.set_attribute("ranking_complete", True)
 
+    # Clamp top_k to candidate count
+    effective_top_k = min(top_k, len(ranked))
+    if effective_top_k < top_k:
+        logger.info("top_k clamped from %d to %d (only %d candidates available)",
+                     top_k, effective_top_k, len(ranked))
+
     # ── 5. Validate top-k ────────────────────────────────────
-    with emitter.span("validate_top_k", attributes={"top_k": top_k}) as span:
+    with emitter.span("validate_top_k", attributes={"top_k": effective_top_k}) as span:
         sim_spec = SimulationSpec(shots=simulation_shots, seed=simulation_seed)
-        validated = validate_candidates(ranked, adapter, circuit_handles, top_k=top_k, sim_spec=sim_spec)
+        validated = validate_candidates(ranked, adapter, circuit_handles, top_k=effective_top_k, sim_spec=sim_spec)
         span.set_attribute("validated_count", len([v for v in validated if v.validated]))
 
     # ── 6. Evaluate contracts on validated candidates ────────

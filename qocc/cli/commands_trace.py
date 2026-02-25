@@ -115,6 +115,11 @@ def trace_timeline(bundle: str, width: int, attrs: bool) -> None:
     console.print(timeline)
 
 
+# ── compare subcommand (canonical location) ──────────────────
+from qocc.cli.commands_compare import compare as _trace_compare_cmd
+trace.add_command(_trace_compare_cmd, "compare")
+
+
 @trace.command("replay")
 @click.argument("bundle", type=click.Path(exists=True))
 @click.option("--out", "-o", "output", type=click.Path(), default=None,

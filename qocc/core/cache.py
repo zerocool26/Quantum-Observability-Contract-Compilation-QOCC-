@@ -5,18 +5,47 @@ Caches compilation results keyed by:
 
 Avoids redundant compilation when the same circuit + pipeline + toolchain
 has already been processed.
+
+Thread- and process-safe: uses per-key file locking and atomic writes
+(write to temp → rename) so concurrent ``put()`` calls never produce
+partial JSON on disk.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
+import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
 from qocc.core.hashing import hash_dict, hash_string
+
+logger = logging.getLogger("qocc.cache")
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write *content* to *path* atomically via temp-file + rename.
+
+    On POSIX ``os.replace`` is atomic.  On Windows it is nearly so and
+    avoids ever leaving a half-written file on disk.
+    """
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp, path)
+    except BaseException:
+        # Clean up tmp on failure
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 class CompilationCache:
@@ -32,6 +61,10 @@ class CompilationCache:
                 meta.json    # metadata (input hash, pipeline hash, timestamp)
                 result.json  # serialized CompileResult
                 circuit.qasm # compiled QASM (if available)
+
+    All writes are **atomic** (write to tempfile → ``os.replace``).  A
+    per-key ``threading.Lock`` prevents concurrent in-process writes from
+    interleaving.
     """
 
     def __init__(self, cache_dir: str | Path | None = None) -> None:
@@ -39,10 +72,20 @@ class CompilationCache:
             cache_dir = Path.home() / ".qocc" / "cache"
         self.root = Path(cache_dir)
         self.root.mkdir(parents=True, exist_ok=True)
+        # Per-key threading locks (process-level concurrency)
+        self._key_locks: dict[str, threading.Lock] = {}
+        self._meta_lock = threading.Lock()  # protects _key_locks dict
 
     # ------------------------------------------------------------------
     # Key computation
     # ------------------------------------------------------------------
+
+    def _lock_for_key(self, key: str) -> threading.Lock:
+        """Return (and lazily create) the per-key threading lock."""
+        with self._meta_lock:
+            if key not in self._key_locks:
+                self._key_locks[key] = threading.Lock()
+            return self._key_locks[key]
 
     @staticmethod
     def cache_key(
@@ -85,18 +128,21 @@ class CompilationCache:
         result_path = entry_dir / "result.json"
         if not result_path.exists():
             return None
-        try:
-            data = json.loads(result_path.read_text(encoding="utf-8"))
-            # Update last-access timestamp
-            meta_path = entry_dir / "meta.json"
-            if meta_path.exists():
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                meta["last_accessed"] = time.time()
-                meta["access_count"] = meta.get("access_count", 0) + 1
-                meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
-            return data
-        except (json.JSONDecodeError, OSError):
-            return None
+        lock = self._lock_for_key(key)
+        with lock:
+            try:
+                data = json.loads(result_path.read_text(encoding="utf-8"))
+                # Update last-access timestamp (atomic)
+                meta_path = entry_dir / "meta.json"
+                if meta_path.exists():
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    meta["last_accessed"] = time.time()
+                    meta["access_count"] = meta.get("access_count", 0) + 1
+                    _atomic_write_text(meta_path, json.dumps(meta, indent=2) + "\n")
+                return data
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning("Cache read failed for key %s: %s", key[:16], exc)
+                return None
 
     def put(
         self,
@@ -105,7 +151,7 @@ class CompilationCache:
         circuit_qasm: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Path:
-        """Store a compilation result in the cache.
+        """Store a compilation result in the cache (atomic + locked).
 
         Parameters:
             key: Cache key (from ``cache_key()``).
@@ -116,31 +162,33 @@ class CompilationCache:
         Returns:
             Path to the cache entry directory.
         """
-        entry_dir = self.root / key
-        entry_dir.mkdir(parents=True, exist_ok=True)
+        lock = self._lock_for_key(key)
+        with lock:
+            entry_dir = self.root / key
+            entry_dir.mkdir(parents=True, exist_ok=True)
 
-        # Write result
-        (entry_dir / "result.json").write_text(
-            json.dumps(result, indent=2, default=str) + "\n",
-            encoding="utf-8",
-        )
+            # Write result (atomic)
+            _atomic_write_text(
+                entry_dir / "result.json",
+                json.dumps(result, indent=2, default=str) + "\n",
+            )
 
-        # Write QASM if available
-        if circuit_qasm:
-            (entry_dir / "circuit.qasm").write_text(circuit_qasm, encoding="utf-8")
+            # Write QASM if available (atomic)
+            if circuit_qasm:
+                _atomic_write_text(entry_dir / "circuit.qasm", circuit_qasm)
 
-        # Write metadata
-        meta: dict[str, Any] = {
-            "created": time.time(),
-            "last_accessed": time.time(),
-            "access_count": 0,
-        }
-        if metadata:
-            meta.update(metadata)
-        (entry_dir / "meta.json").write_text(
-            json.dumps(meta, indent=2, default=str) + "\n",
-            encoding="utf-8",
-        )
+            # Write metadata (atomic)
+            meta: dict[str, Any] = {
+                "created": time.time(),
+                "last_accessed": time.time(),
+                "access_count": 0,
+            }
+            if metadata:
+                meta.update(metadata)
+            _atomic_write_text(
+                entry_dir / "meta.json",
+                json.dumps(meta, indent=2, default=str) + "\n",
+            )
 
         return entry_dir
 

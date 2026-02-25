@@ -9,7 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from qocc.api import check_contract, _counts_to_observable_values, _evaluate_cost_contract
+from qocc.api import check_contract, _evaluate_cost_contract
+from qocc.contracts.eval_sampling import _counts_to_observable_values
 from qocc.contracts.spec import ContractSpec
 
 
