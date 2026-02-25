@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QOCC Seeds",
+  "type": "object",
+  "properties": {
+    "global_seed": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "rng_algorithm": {
+      "type": "string"
+    },
+    "stage_seeds": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer"
+      }
+    }
+  },
+  "additionalProperties": true
+}

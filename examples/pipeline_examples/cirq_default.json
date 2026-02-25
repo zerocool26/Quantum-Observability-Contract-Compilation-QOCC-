@@ -1,0 +1,8 @@
+{
+  "adapter": "cirq",
+  "optimization_level": 1,
+  "passes": [],
+  "parameters": {
+    "seed": 42
+  }
+}

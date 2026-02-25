@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QOCC Metrics",
+  "type": "object",
+  "properties": {
+    "width": {
+      "type": "integer"
+    },
+    "total_gates": {
+      "type": "integer"
+    },
+    "gates_1q": {
+      "type": "integer"
+    },
+    "gates_2q": {
+      "type": "integer"
+    },
+    "depth": {
+      "type": "integer"
+    },
+    "depth_2q": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "gate_histogram": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer"
+      }
+    },
+    "topology_violations": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "duration_estimate": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "proxy_error_score": {
+      "type": [
+        "number",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": true
+}

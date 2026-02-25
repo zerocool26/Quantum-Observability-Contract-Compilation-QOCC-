@@ -1,0 +1,224 @@
+"""JSON Schema definitions for all Trace Bundle files.
+
+Each schema is a Python dict following JSON Schema Draft 2020-12.
+A convenience function ``validate_bundle`` checks a bundle directory.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import jsonschema
+
+# ======================================================================
+# Schemas
+# ======================================================================
+
+MANIFEST_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "QOCC Trace Bundle Manifest",
+    "type": "object",
+    "required": ["schema_version", "created_at", "run_id"],
+    "properties": {
+        "schema_version": {"type": "string"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "run_id": {"type": "string"},
+        "qocc_version": {"type": "string"},
+    },
+    "additionalProperties": True,
+}
+
+ENV_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "QOCC Environment Snapshot",
+    "type": "object",
+    "required": ["os", "python"],
+    "properties": {
+        "os": {"type": "string"},
+        "python": {"type": "string"},
+        "python_executable": {"type": "string"},
+        "packages": {"type": "object", "additionalProperties": {"type": "string"}},
+        "git_sha": {"type": ["string", "null"]},
+    },
+    "additionalProperties": True,
+}
+
+SEEDS_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "QOCC Seeds",
+    "type": "object",
+    "properties": {
+        "global_seed": {"type": ["integer", "null"]},
+        "rng_algorithm": {"type": "string"},
+        "stage_seeds": {
+            "type": "object",
+            "additionalProperties": {"type": "integer"},
+        },
+    },
+    "additionalProperties": True,
+}
+
+METRICS_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "QOCC Metrics",
+    "type": "object",
+    "properties": {
+        "width": {"type": "integer"},
+        "total_gates": {"type": "integer"},
+        "gates_1q": {"type": "integer"},
+        "gates_2q": {"type": "integer"},
+        "depth": {"type": "integer"},
+        "depth_2q": {"type": ["integer", "null"]},
+        "gate_histogram": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "topology_violations": {"type": ["integer", "null"]},
+        "duration_estimate": {"type": ["number", "null"]},
+        "proxy_error_score": {"type": ["number", "null"]},
+    },
+    "additionalProperties": True,
+}
+
+CONTRACTS_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "QOCC Contract Specifications",
+    "type": "array",
+    "items": {
+        "type": "object",
+        "required": ["name", "type"],
+        "properties": {
+            "name": {"type": "string"},
+            "type": {
+                "type": "string",
+                "enum": ["observable", "distribution", "clifford"],
+            },
+            "spec": {"type": "object"},
+            "tolerances": {"type": "object"},
+            "confidence": {"type": "object"},
+            "resource_budget": {"type": "object"},
+        },
+        "additionalProperties": True,
+    },
+}
+
+CONTRACT_RESULTS_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "QOCC Contract Results",
+    "type": "array",
+    "items": {
+        "type": "object",
+        "required": ["name", "passed"],
+        "properties": {
+            "name": {"type": "string"},
+            "passed": {"type": "boolean"},
+            "details": {"type": "object"},
+        },
+        "additionalProperties": True,
+    },
+}
+
+TRACE_SPAN_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "QOCC Trace Span (single JSON-Lines entry)",
+    "type": "object",
+    "required": ["trace_id", "span_id", "name", "start_time"],
+    "properties": {
+        "trace_id": {"type": "string"},
+        "span_id": {"type": "string"},
+        "parent_span_id": {"type": ["string", "null"]},
+        "name": {"type": "string"},
+        "start_time": {"type": "string"},
+        "end_time": {"type": ["string", "null"]},
+        "attributes": {"type": "object"},
+        "events": {
+            "type": "array",
+            "items": {"type": "object"},
+        },
+        "links": {
+            "type": "array",
+            "items": {"type": "object"},
+        },
+        "status": {"type": "string", "enum": ["OK", "ERROR", "UNSET"]},
+    },
+    "additionalProperties": True,
+}
+
+# Registry for programmatic access
+SCHEMAS: dict[str, dict[str, Any]] = {
+    "manifest": MANIFEST_SCHEMA,
+    "env": ENV_SCHEMA,
+    "seeds": SEEDS_SCHEMA,
+    "metrics": METRICS_SCHEMA,
+    "contracts": CONTRACTS_SCHEMA,
+    "contract_results": CONTRACT_RESULTS_SCHEMA,
+    "trace_span": TRACE_SPAN_SCHEMA,
+}
+
+
+# ======================================================================
+# Validation
+# ======================================================================
+
+
+def validate_file(schema_name: str, data: Any) -> list[str]:
+    """Validate *data* against the named schema. Returns list of error messages."""
+    schema = SCHEMAS.get(schema_name)
+    if schema is None:
+        return [f"Unknown schema: {schema_name}"]
+    errors: list[str] = []
+    try:
+        jsonschema.validate(instance=data, schema=schema)
+    except jsonschema.ValidationError as exc:
+        errors.append(str(exc.message))
+    return errors
+
+
+def validate_bundle(bundle_dir: str | Path) -> dict[str, list[str]]:
+    """Check all standard files inside *bundle_dir*. Returns ``{filename: errors}``."""
+    root = Path(bundle_dir)
+    results: dict[str, list[str]] = {}
+
+    simple_maps = {
+        "manifest.json": "manifest",
+        "env.json": "env",
+        "seeds.json": "seeds",
+        "metrics.json": "metrics",
+        "contracts.json": "contracts",
+        "contract_results.json": "contract_results",
+    }
+
+    for fname, schema_name in simple_maps.items():
+        fp = root / fname
+        if fp.exists():
+            data = json.loads(fp.read_text(encoding="utf-8"))
+            results[fname] = validate_file(schema_name, data)
+        else:
+            results[fname] = [f"{fname} missing"]
+
+    # trace.jsonl — validate each line
+    trace_fp = root / "trace.jsonl"
+    if trace_fp.exists():
+        trace_errors: list[str] = []
+        for i, line in enumerate(trace_fp.read_text(encoding="utf-8").strip().splitlines()):
+            try:
+                span = json.loads(line)
+                errs = validate_file("trace_span", span)
+                for e in errs:
+                    trace_errors.append(f"line {i}: {e}")
+            except json.JSONDecodeError as exc:
+                trace_errors.append(f"line {i}: invalid JSON — {exc}")
+        results["trace.jsonl"] = trace_errors
+    else:
+        results["trace.jsonl"] = ["trace.jsonl missing"]
+
+    return results
+
+
+def export_schemas(out_dir: str | Path) -> None:
+    """Write all JSON schemas as standalone files."""
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    for name, schema in SCHEMAS.items():
+        (out / f"{name}.schema.json").write_text(
+            json.dumps(schema, indent=2) + "\n", encoding="utf-8"
+        )

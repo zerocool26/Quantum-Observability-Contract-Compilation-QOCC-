@@ -1,0 +1,7 @@
+{
+  "adapter": "qiskit",
+  "optimization_levels": [0, 1, 2, 3],
+  "seeds": [42, 123, 456],
+  "routing_methods": ["stochastic", "sabre"],
+  "extra_params": {}
+}

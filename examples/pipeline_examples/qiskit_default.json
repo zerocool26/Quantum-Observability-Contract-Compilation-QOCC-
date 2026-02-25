@@ -1,0 +1,8 @@
+{
+  "adapter": "qiskit",
+  "optimization_level": 2,
+  "passes": [],
+  "parameters": {
+    "seed": 42
+  }
+}

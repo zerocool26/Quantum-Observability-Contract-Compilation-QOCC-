@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QOCC Contract Specifications",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "name",
+      "type"
+    ],
+    "properties": {
+      "name": {
+        "type": "string"
+      },
+      "type": {
+        "type": "string",
+        "enum": [
+          "observable",
+          "distribution",
+          "clifford"
+        ]
+      },
+      "spec": {
+        "type": "object"
+      },
+      "tolerances": {
+        "type": "object"
+      },
+      "confidence": {
+        "type": "object"
+      },
+      "resource_budget": {
+        "type": "object"
+      }
+    },
+    "additionalProperties": true
+  }
+}
