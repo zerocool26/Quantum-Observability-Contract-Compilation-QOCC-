@@ -11,7 +11,25 @@ A contract is a machine-checkable requirement with:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
+
+
+class ContractType(str, Enum):
+    """Valid contract types."""
+
+    OBSERVABLE = "observable"
+    DISTRIBUTION = "distribution"
+    CLIFFORD = "clifford"
+    EXACT = "exact"
+    COST = "cost"
+
+    @classmethod
+    def is_valid(cls, value: str) -> bool:
+        return value in cls._value2member_map_
+
+
+VALID_CONTRACT_TYPES = frozenset(ct.value for ct in ContractType)
 
 
 @dataclass
@@ -20,7 +38,8 @@ class ContractSpec:
 
     Attributes:
         name: Human-readable identifier.
-        type: One of ``"observable"``, ``"distribution"``, ``"clifford"``, ``"cost"``.
+        type: One of ``"observable"``, ``"distribution"``, ``"clifford"``,
+              ``"exact"``, ``"cost"``.
         spec: Details of what to check.
         tolerances: Numeric tolerance thresholds.
         confidence: Confidence configuration (alpha, CI level, etc.).
@@ -29,12 +48,16 @@ class ContractSpec:
     """
 
     name: str
-    type: str  # "observable" | "distribution" | "clifford" | "cost"
+    type: str  # validated against ContractType
     spec: dict[str, Any] = field(default_factory=dict)
     tolerances: dict[str, float] = field(default_factory=dict)
     confidence: dict[str, float] = field(default_factory=dict)
     resource_budget: dict[str, Any] = field(default_factory=dict)
     evaluator: str = "auto"
+
+    def __post_init__(self) -> None:
+        # Flag invalid types; evaluation layer handles them gracefully
+        self._type_valid = ContractType.is_valid(self.type) or self.evaluator != "auto"
 
     def to_dict(self) -> dict[str, Any]:
         return {

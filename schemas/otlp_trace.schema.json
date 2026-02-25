@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QOCC OTLP Trace Export",
+  "description": "OpenTelemetry Protocol (OTLP) JSON encoding for QOCC trace spans.",
+  "type": "object",
+  "required": ["resourceSpans"],
+  "properties": {
+    "resourceSpans": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["resource", "scopeSpans"],
+        "properties": {
+          "resource": {
+            "type": "object",
+            "properties": {
+              "attributes": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/attribute" }
+              }
+            }
+          },
+          "scopeSpans": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "scope": {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" },
+                    "version": { "type": "string" }
+                  }
+                },
+                "spans": {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/span" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "attribute": {
+      "type": "object",
+      "required": ["key", "value"],
+      "properties": {
+        "key": { "type": "string" },
+        "value": {
+          "type": "object",
+          "properties": {
+            "stringValue": { "type": "string" },
+            "intValue": { "type": "string" },
+            "doubleValue": { "type": "number" },
+            "boolValue": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "span": {
+      "type": "object",
+      "required": ["traceId", "spanId", "name"],
+      "properties": {
+        "traceId": { "type": "string" },
+        "spanId": { "type": "string" },
+        "parentSpanId": { "type": "string" },
+        "name": { "type": "string" },
+        "kind": { "type": "integer" },
+        "startTimeUnixNano": { "type": "integer" },
+        "endTimeUnixNano": { "type": "integer" },
+        "attributes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/attribute" }
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "timeUnixNano": { "type": "integer" },
+              "name": { "type": "string" },
+              "attributes": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/attribute" }
+              }
+            }
+          }
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "traceId": { "type": "string" },
+              "spanId": { "type": "string" },
+              "attributes": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/attribute" }
+              }
+            }
+          }
+        },
+        "status": {
+          "type": "object",
+          "properties": {
+            "code": { "type": "integer" },
+            "message": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

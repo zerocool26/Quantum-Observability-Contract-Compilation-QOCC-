@@ -104,6 +104,7 @@ class QiskitAdapter(BaseAdapter):
         try:
             from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager  # type: ignore
             from qiskit.transpiler import PassManager  # type: ignore
+            import tracemalloc as _tm
 
             pm = generate_preset_pass_manager(
                 optimization_level=opt_level,
@@ -133,15 +134,34 @@ class QiskitAdapter(BaseAdapter):
                 if span_ctx:
                     span_ctx.__enter__()
 
+                # Track memory usage
+                mem_before = 0
+                try:
+                    _tm.start()
+                except RuntimeError:
+                    pass  # already tracing
+
                 t_stage = time.perf_counter()
                 try:
+                    snapshot_before = _tm.take_snapshot()
                     intermediate = stage_pm.run(intermediate)
+                    snapshot_after = _tm.take_snapshot()
                     dt_stage = (time.perf_counter() - t_stage) * 1000.0
+
+                    # Compute memory delta
+                    mem_bytes: int | None = None
+                    try:
+                        stats = snapshot_after.compare_to(snapshot_before, "lineno")
+                        mem_bytes = sum(s.size_diff for s in stats if s.size_diff > 0)
+                    except Exception:
+                        pass
+
                     pass_log.append(PassLogEntry(
                         pass_name=f"qiskit.{stage_name}",
                         parameters={"optimization_level": opt_level},
                         order=i,
                         duration_ms=dt_stage,
+                        memory_bytes=mem_bytes,
                     ))
                     if span_ctx:
                         span_ctx.__exit__(None, None, None)
@@ -156,6 +176,11 @@ class QiskitAdapter(BaseAdapter):
                     ))
                     if span_ctx:
                         span_ctx.__exit__(type(exc), exc, exc.__traceback__)
+                finally:
+                    try:
+                        _tm.stop()
+                    except RuntimeError:
+                        pass
 
             compiled = intermediate
 

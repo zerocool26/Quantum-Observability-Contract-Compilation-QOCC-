@@ -183,7 +183,7 @@ def render_metrics_comparison(
 
     numeric_keys = [
         "width", "depth", "total_gates", "gates_1q", "gates_2q",
-        "two_qubit_depth", "duration_estimate_ns", "proxy_error_score",
+        "depth_2q", "duration_estimate", "proxy_error_score",
     ]
 
     for key in numeric_keys:

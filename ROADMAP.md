@@ -97,7 +97,33 @@
 - [ ] GPU simulation backend integration
 - [ ] QEC sampling mode
 - [ ] CI/CD integration guides and GitHub Actions templates
-- [ ] OpenTelemetry export (bridge to existing observability stacks)
+- [x] OpenTelemetry OTLP JSON export (bridge to existing observability stacks)
+- [x] Bayesian optimization for compilation search (`--strategy bayesian`)
+- [x] SPRT early stopping (statistically optimal termination)
+- [x] Parallel candidate compilation (ThreadPoolExecutor)
+- [x] Random search strategy (`--strategy random`)
+
+---
+
+## v0.5 — Phase 5 Improvements
+
+### Done:
+- [x] Cache actually skips recompilation (CompileResult.from_dict)
+- [x] Seeds threaded into compilation pipeline
+- [x] QASM canonicalization rewritten (commuting gate sort, float normalisation)
+- [x] Deep copy in normalize_circuit prevents shared mutable state
+- [x] Parallel compilation via ThreadPoolExecutor
+- [x] OpenTelemetry OTLP JSON export for Jaeger/Grafana/Datadog
+- [x] OpenTelemetry SDK bridge (when opentelemetry-sdk installed)
+- [x] Bayesian UCB-based search optimizer (numpy-only, no sklearn)
+- [x] Random search strategy with deduplication
+- [x] SPRT (Sequential Probability Ratio Test) early stopping
+- [x] ContractType enum with validation
+- [x] Metric key alignment (visualization matches compute output)
+- [x] Circular dependency fix (eval_sampling no longer imports api)
+- [x] Memory tracking via tracemalloc in Qiskit adapter
+- [x] --strategy CLI flag for compile search
+- [x] 75 new Phase 5 tests (233 total, 1 skipped)
 
 ---
 

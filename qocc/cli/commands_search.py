@@ -31,6 +31,8 @@ def compile_group() -> None:
 @click.option("--shots", type=int, default=1024, help="Simulation shots for validation.")
 @click.option("--mode", "-m", type=click.Choice(["single", "pareto"]), default="single",
               help="Selection mode: single (best surrogate) or pareto (multi-objective).")
+@click.option("--strategy", type=click.Choice(["grid", "random", "bayesian"]), default="grid",
+              help="Search strategy: grid (exhaustive), random (sampling), bayesian (adaptive).")
 @click.option("--out", "-o", "output", type=click.Path(), default=None,
               help="Output bundle path.")
 def compile_search(
@@ -42,6 +44,7 @@ def compile_search(
     topk: int,
     shots: int,
     mode: str,
+    strategy: str,
     output: str | None,
 ) -> None:
     """Generate, compile, score, validate, and select best pipeline.
@@ -77,6 +80,10 @@ def compile_search(
     if search_spec:
         with open(search_spec) as f:
             search_config = json.load(f)
+    if search_config is None:
+        search_config = {}
+    # Inject strategy from CLI flag
+    search_config.setdefault("strategy", strategy)
 
     # Load contracts
     contract_data = None

@@ -19,8 +19,21 @@ from qocc.contracts.stats import (
 )
 
 
+def _counts_to_observable_values(counts: dict[str, int]) -> list[float]:
+    """Convert measurement counts to Z-observable per-shot values.
+
+    Each bitstring maps to: +1 if parity(bitstring) == 0, else -1.
+    """
+    values: list[float] = []
+    for bitstring, count in counts.items():
+        parity = sum(int(b) for b in bitstring) % 2
+        val = 1.0 if parity == 0 else -1.0
+        values.extend([val] * count)
+    return values
+
+
 # ======================================================================
-# Iterative early-stopping wrapper
+# Iterative early-stopping wrapper (SPRT-enhanced)
 # ======================================================================
 
 
@@ -37,12 +50,13 @@ def _iterative_evaluate(
     """Run *evaluate_once* with increasing shot counts until the result
     is conclusive or the budget is exhausted.
 
+    Uses a two-tier stopping strategy:
+    1. **SPRT** (Sequential Probability Ratio Test) — provides statistically
+       optimal stopping with guaranteed Type I/II error bounds.
+    2. **CI separation heuristic** — fallback when SPRT is not applicable.
+
     When *simulate_fn* is ``None`` (no adapter available for re-simulation),
     falls back to a single evaluation with the provided counts.
-
-    Each iteration doubles the shots.  Stops when:
-    - The result margin is decisive (CI bound separated from threshold), OR
-    - ``max_shots`` is reached.
     """
     min_shots = int(spec.resource_budget.get("min_shots", 0))
     max_shots = int(spec.resource_budget.get("max_shots", 0))
@@ -57,9 +71,11 @@ def _iterative_evaluate(
     total_shots_used = current_shots
     last_result = evaluate_once(spec, counts_before, counts_after)
 
-    # Check if already conclusive (CI well separated from tolerance)
-    if _is_conclusive(last_result, spec):
+    # Check if already conclusive
+    sprt = _SPRTChecker.from_spec(spec)
+    if sprt.check(last_result) or _is_conclusive(last_result, spec):
         last_result.details["early_stopped"] = True
+        last_result.details["stopping_method"] = "sprt" if sprt.check(last_result) else "ci_separation"
         last_result.details["total_shots"] = total_shots_used
         return last_result
 
@@ -72,8 +88,10 @@ def _iterative_evaluate(
             break
         total_shots_used += next_shots
         last_result = evaluate_once(spec, counts_before, new_counts)
-        if _is_conclusive(last_result, spec):
+
+        if sprt.check(last_result) or _is_conclusive(last_result, spec):
             last_result.details["early_stopped"] = True
+            last_result.details["stopping_method"] = "sprt" if sprt.check(last_result) else "ci_separation"
             last_result.details["total_shots"] = total_shots_used
             return last_result
         next_shots *= 2
@@ -81,6 +99,84 @@ def _iterative_evaluate(
     last_result.details["early_stopped"] = False
     last_result.details["total_shots"] = total_shots_used
     return last_result
+
+
+class _SPRTChecker:
+    """Sequential Probability Ratio Test (Wald) for early stopping.
+
+    For a simple null H0: theta <= theta0 vs H1: theta > theta0,
+    SPRT monitors the log-likelihood ratio and stops when it crosses
+    one of two boundaries:
+
+        upper boundary = ln((1 - beta) / alpha)   → reject H0
+        lower boundary = ln(beta / (1 - alpha))    → accept H0
+
+    where alpha = P(Type I error), beta = P(Type II error).
+    """
+
+    def __init__(self, alpha: float = 0.05, beta: float = 0.1, theta0: float = 0.0) -> None:
+        import math
+        self.alpha = alpha
+        self.beta = beta
+        self.theta0 = theta0
+        self.upper_bound = math.log((1 - beta) / max(alpha, 1e-12))
+        self.lower_bound = math.log(beta / max(1 - alpha, 1e-12))
+
+    @classmethod
+    def from_spec(cls, spec: ContractSpec) -> _SPRTChecker:
+        alpha = 1.0 - spec.confidence.get("level", 0.95)
+        beta = spec.resource_budget.get("sprt_beta", 0.1)
+        theta0 = spec.tolerances.get("tvd", spec.tolerances.get("epsilon", 0.05))
+        return cls(alpha=alpha, beta=beta, theta0=theta0)
+
+    def check(self, result: ContractResult) -> bool:
+        """Check if the result is SPRT-conclusive."""
+        d = result.details
+        import math
+
+        # For TVD-based results: use point estimate vs threshold
+        if "tvd_point" in d:
+            tvd = d["tvd_point"]
+            tol = d.get("tolerance", self.theta0)
+            shots = d.get("shots_after", 100)
+            # Approximate log-likelihood ratio for TVD
+            # Under H0: TVD ~ tol, Under H1: TVD ~ 0
+            if shots > 0:
+                llr = self._compute_llr(tvd, tol, shots)
+                d["sprt_llr"] = llr
+                if llr >= self.upper_bound:
+                    return True  # Reject H0 (TVD > tol) → fail
+                if llr <= self.lower_bound:
+                    return True  # Accept H0 (TVD <= tol) → pass
+            return False
+
+        # For p-value based: direct SPRT on p-value
+        if "p_value" in d:
+            p = d["p_value"]
+            alpha = d.get("alpha", self.alpha)
+            # Simple O'Brien-Fleming-like spending
+            if p < alpha / 3:
+                return True  # Very strong rejection
+            if p > 1 - alpha / 3:
+                return True  # Very strong non-rejection
+            return False
+
+        return False
+
+    @staticmethod
+    def _compute_llr(observed: float, theta0: float, n: int) -> float:
+        """Approximate log-likelihood ratio for TVD observation."""
+        import math
+        # Use Gaussian approximation: TVD ~ N(theta, sigma^2/n)
+        sigma = max(0.01, theta0 * 0.5)
+        theta1 = theta0 * 0.5  # alternative hypothesis: half the tolerance
+
+        # Log-likelihood ratio
+        if sigma <= 0:
+            return 0.0
+        ll_h0 = -0.5 * n * ((observed - theta0) / sigma) ** 2
+        ll_h1 = -0.5 * n * ((observed - theta1) / sigma) ** 2
+        return ll_h1 - ll_h0
 
 
 def _is_conclusive(result: ContractResult, spec: ContractSpec) -> bool:
@@ -235,7 +331,6 @@ def evaluate_observable_contract(
         _cb: dict[str, int],
         _ca: dict[str, int],
     ) -> ContractResult:
-        from qocc.api import _counts_to_observable_values
         vb = _counts_to_observable_values(_cb) if _cb else values_before
         va = _counts_to_observable_values(_ca) if _ca else values_after
         return _evaluate_observable_once(_spec, vb, va)

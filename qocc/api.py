@@ -55,6 +55,9 @@ def run_trace(
     if seeds is None:
         seeds = {"global_seed": 42, "rng_algorithm": "MT19937", "stage_seeds": {}}
 
+    # Inject global_seed into pipeline parameters so adapters use it
+    _seed_value = seeds.get("global_seed", 42)
+
     # Build output dir
     if output:
         out_path = Path(output)
@@ -84,6 +87,10 @@ def run_trace(
         pipeline_spec = pipeline
     else:
         pipeline_spec = PipelineSpec(adapter=adapter_name)
+
+    # Inject seed from seeds dict into pipeline parameters
+    if "seed" not in pipeline_spec.parameters:
+        pipeline_spec.parameters["seed"] = _seed_value
 
     adapter = get_adapter(adapter_name)
 
@@ -127,8 +134,16 @@ def run_trace(
                 "pipeline_hash": pipeline_spec.stable_hash()[:16],
                 "timestamp": time.time(),
             })
-            # Re-compile anyway to get the actual circuit handle
-            compile_result = adapter.compile(normalized, pipeline_spec, emitter=emitter)
+            # Restore from cache — skip actual compilation
+            from qocc.adapters.base import CompileResult as _CR
+            compile_result = _CR.from_dict(cached)
+            # If the cached handle has no native circuit, re-ingest from QASM
+            if compile_result.circuit.native_circuit is None and compile_result.circuit.qasm3:
+                try:
+                    compile_result.circuit = adapter.ingest(compile_result.circuit.qasm3)
+                except Exception:
+                    # Fallback: re-compile
+                    compile_result = adapter.compile(normalized, pipeline_spec, emitter=emitter)
         else:
             span.set_attribute("cache_hit", False)
             span.add_event("cache_miss", key=cache_key[:16])
@@ -507,8 +522,6 @@ def check_contract(
 
     if need_simulation and adapter and input_handle and compiled_handle:
         from qocc.adapters.base import SimulationSpec
-        import signal
-        import threading
 
         # Determine effective shots: min(simulation_shots, per-contract max_shots)
         effective_shots = simulation_shots
@@ -866,69 +879,77 @@ def search_compile(
     cache = CompilationCache()
     cache_index: list[dict[str, Any]] = []
 
-    with emitter.span("compile_candidates") as compile_parent:
-        for candidate in candidates:
-            with emitter.span(
-                f"compile/{candidate.candidate_id[:8]}",
-                attributes={"candidate_id": candidate.candidate_id},
-            ) as cspan:
-                # Add span link back to normalize span
-                cspan.add_link(
-                    trace_id=emitter.trace_id,
-                    span_id=normalize_span_id,
-                    relationship="derived_from",
+    def _compile_one_candidate(candidate: Any) -> tuple[Any, Any, list[dict[str, Any]]]:
+        """Compile a single candidate and return (candidate, handle, cache_entries)."""
+        local_cache_entries: list[dict[str, Any]] = []
+        try:
+            c_key = CompilationCache.cache_key(
+                circuit_hash=normalized.stable_hash(),
+                pipeline_dict=candidate.pipeline.to_dict(),
+                backend_version=adapter.describe_backend().version,
+            )
+            cached = cache.get(c_key)
+            if cached is not None:
+                local_cache_entries.append({
+                    "key": c_key[:16], "hit": True,
+                    "candidate_id": candidate.candidate_id,
+                    "timestamp": time.time(),
+                })
+                from qocc.adapters.base import CompileResult as _CR
+                result = _CR.from_dict(cached)
+                if result.circuit.native_circuit is None and result.circuit.qasm3:
+                    try:
+                        result.circuit = adapter.ingest(result.circuit.qasm3)
+                    except Exception:
+                        result = adapter.compile(normalized, candidate.pipeline)
+            else:
+                local_cache_entries.append({
+                    "key": c_key[:16], "hit": False,
+                    "candidate_id": candidate.candidate_id,
+                    "timestamp": time.time(),
+                })
+                result = adapter.compile(normalized, candidate.pipeline)
+                cache.put(
+                    c_key, result.to_dict(),
+                    circuit_qasm=result.circuit.qasm3,
+                    metadata={"candidate_id": candidate.candidate_id},
                 )
-                try:
-                    # Cache lookup
-                    c_key = CompilationCache.cache_key(
-                        circuit_hash=normalized.stable_hash(),
-                        pipeline_dict=candidate.pipeline.to_dict(),
-                        backend_version=adapter.describe_backend().version,
-                    )
-                    cached = cache.get(c_key)
-                    if cached is not None:
-                        cspan.set_attribute("cache_hit", True)
-                        cspan.add_event("cache_hit", key=c_key[:16])
-                        cache_index.append({
-                            "key": c_key[:16],
-                            "hit": True,
-                            "candidate_id": candidate.candidate_id,
-                            "timestamp": time.time(),
-                        })
-                    else:
-                        cspan.add_event("cache_miss", key=c_key[:16])
-                        cache_index.append({
-                            "key": c_key[:16],
-                            "hit": False,
-                            "candidate_id": candidate.candidate_id,
-                            "timestamp": time.time(),
-                        })
 
-                    result = adapter.compile(normalized, candidate.pipeline, emitter=emitter)
-                    compiled = result.circuit
-                    circuit_handles[candidate.candidate_id] = compiled
+            compiled = result.circuit
+            m = adapter.get_metrics(compiled)
+            candidate.metrics = m.to_dict()
+            return candidate, compiled, local_cache_entries
+        except Exception as exc:
+            candidate.metrics = {"error": str(exc)}
+            return candidate, None, local_cache_entries
 
-                    if cached is None:
-                        cache.put(
-                            c_key,
-                            result.to_dict(),
-                            circuit_qasm=compiled.qasm3,
-                            metadata={"candidate_id": candidate.candidate_id},
-                        )
+    with emitter.span("compile_candidates") as compile_parent:
+        # Use parallel compilation for speed when many candidates exist
+        import concurrent.futures
 
-                    m = adapter.get_metrics(compiled)
-                    candidate.metrics = m.to_dict()
-                    cspan.set_attribute("cache_hit", cached is not None)
-                except Exception as exc:
-                    candidate.metrics = {"error": str(exc)}
-                    cspan.record_exception(exc)
-                    cspan.add_event(
-                        "candidate_compile_error",
-                        candidate_id=candidate.candidate_id,
-                        error=str(exc),
-                    )
+        max_workers = min(len(candidates), os.cpu_count() or 4, 8)
+
+        if len(candidates) > 1 and max_workers > 1:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    pool.submit(_compile_one_candidate, c): c
+                    for c in candidates
+                }
+                for future in concurrent.futures.as_completed(futures):
+                    cand, compiled_handle, c_entries = future.result()
+                    cache_index.extend(c_entries)
+                    if compiled_handle is not None:
+                        circuit_handles[cand.candidate_id] = compiled_handle
+        else:
+            # Serial fallback for single candidate
+            for candidate in candidates:
+                cand, compiled_handle, c_entries = _compile_one_candidate(candidate)
+                cache_index.extend(c_entries)
+                if compiled_handle is not None:
+                    circuit_handles[cand.candidate_id] = compiled_handle
 
         compile_parent.set_attribute("compiled_count", len(circuit_handles))
+        compile_parent.set_attribute("parallel_workers", max_workers)
 
     # ── 4. Surrogate score & rank ────────────────────────────
     with emitter.span("score_and_rank") as span:

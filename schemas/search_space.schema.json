@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QOCC Search Space Configuration",
+  "type": "object",
+  "properties": {
+    "adapter": {
+      "type": "string",
+      "default": "qiskit",
+      "description": "Adapter name."
+    },
+    "optimization_levels": {
+      "type": "array",
+      "items": { "type": "integer" },
+      "default": [0, 1, 2, 3],
+      "description": "Optimization levels to explore."
+    },
+    "seeds": {
+      "type": "array",
+      "items": { "type": "integer" },
+      "default": [42],
+      "description": "Seeds for reproducible compilation."
+    },
+    "routing_methods": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": ["stochastic", "sabre"],
+      "description": "Routing strategies (adapter-specific)."
+    },
+    "extra_params": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array"
+      },
+      "description": "Additional parameter grids {key: [val1, val2, ...]}."
+    },
+    "strategy": {
+      "type": "string",
+      "enum": ["grid", "random", "bayesian"],
+      "default": "grid",
+      "description": "Search strategy: grid (exhaustive), random (sampling), bayesian (adaptive UCB)."
+    },
+    "max_candidates": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 50,
+      "description": "Maximum number of candidates to generate."
+    },
+    "bayesian_init_points": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 5,
+      "description": "Number of initial random samples before Bayesian surrogate kicks in."
+    },
+    "bayesian_explore_weight": {
+      "type": "number",
+      "minimum": 0,
+      "default": 1.5,
+      "description": "Exploration vs exploitation weight for UCB acquisition (higher = more exploration)."
+    }
+  },
+  "additionalProperties": true
+}

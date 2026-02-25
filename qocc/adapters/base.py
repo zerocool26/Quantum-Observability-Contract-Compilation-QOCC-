@@ -78,6 +78,36 @@ class CompileResult:
             "pass_log": [p.to_dict() for p in self.pass_log],
         }
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> CompileResult:
+        """Reconstruct a CompileResult from its serialised dict.
+
+        The native circuit is not available — only QASM3 text is preserved,
+        so the ``CircuitHandle.native_circuit`` is set to ``None``.
+        """
+        c = d.get("circuit", {})
+        handle = CircuitHandle(
+            name=c.get("name", "cached"),
+            num_qubits=c.get("num_qubits", 0),
+            native_circuit=None,
+            source_format=c.get("source_format", "unknown"),
+            qasm3=c.get("qasm3"),
+            _normalized=c.get("normalized", False),
+        )
+        pass_log = [
+            PassLogEntry(
+                pass_name=p.get("pass_name", ""),
+                parameters=p.get("parameters", {}),
+                order=p.get("order", 0),
+                duration_ms=p.get("duration_ms"),
+                memory_bytes=p.get("memory_bytes"),
+                warnings=p.get("warnings", []),
+                errors=p.get("errors", []),
+            )
+            for p in d.get("pass_log", [])
+        ]
+        return cls(circuit=handle, pass_log=pass_log)
+
 
 class MetricsSnapshot:
     """Immutable metrics for a circuit at a point in time."""

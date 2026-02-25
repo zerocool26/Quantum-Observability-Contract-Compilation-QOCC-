@@ -36,6 +36,12 @@ qocc compile search --adapter qiskit --input examples/ghz.qasm --topk 5 --out se
 # Compilation search with Pareto multi-objective selection
 qocc compile search --adapter qiskit --input examples/ghz.qasm --mode pareto --out search.zip
 
+# Random search strategy
+qocc compile search --adapter qiskit --input examples/ghz.qasm --strategy random --out search.zip
+
+# Bayesian adaptive search (UCB acquisition)
+qocc compile search --adapter qiskit --input examples/ghz.qasm --strategy bayesian --out search.zip
+
 # Detect nondeterminism (compile 5 times)
 qocc trace run --adapter qiskit --input examples/ghz.qasm --repeat 5 --out nd.zip
 
@@ -77,13 +83,14 @@ Every stage emits structured spans with per-pass granularity. The resulting Trac
 ]
 ```
 
-### Early Stopping
+### Early Stopping (SPRT)
 
-Set `resource_budget.early_stopping: true` with `min_shots` and `max_shots` to enable iterative sampling that halts when pass/fail is statistically certain:
+Set `resource_budget.early_stopping: true` with `min_shots` and `max_shots` to enable iterative sampling that halts when pass/fail is statistically certain. Uses a two-tier strategy: **SPRT** (Sequential Probability Ratio Test) for guaranteed Type I/II error bounds, with a CI-separation heuristic as fallback.
 
 ```json
 {"name": "adaptive", "type": "distribution", "tolerances": {"tvd": 0.1},
- "resource_budget": {"early_stopping": true, "min_shots": 256, "max_shots": 8192}}
+ "resource_budget": {"early_stopping": true, "min_shots": 256, "max_shots": 8192,
+                      "sprt_beta": 0.1}}
 ```
 
 ## Compilation Search
@@ -110,9 +117,23 @@ result = search_compile(
 )
 ```
 
+## OpenTelemetry Export
+
+Export traces as OTLP-compatible JSON for ingestion by Jaeger, Grafana Tempo, Datadog, or any OpenTelemetry collector:
+
+```python
+from qocc.trace.exporters import export_otlp_json, export_to_otel_sdk
+
+# OTLP JSON file (works standalone)
+export_otlp_json(spans, "traces.otlp.json", service_name="qocc")
+
+# Bridge to OpenTelemetry Python SDK (when opentelemetry-sdk installed)
+export_to_otel_sdk(spans)  # Spans appear in any configured OTel exporter
+```
+
 ## Caching
 
-QOCC uses a content-addressed compilation cache keyed by `SHA-256(circuit_hash || pipeline_dict || backend_version)`. Cache hits are recorded in `cache_index.json` inside the bundle for reproducibility auditing.
+QOCC uses a content-addressed compilation cache keyed by `SHA-256(circuit_hash || pipeline_dict || backend_version)`. Cache hits are recorded in `cache_index.json` inside the bundle for reproducibility auditing. Cache hits now **skip recompilation entirely** by deserialising cached results.
 
 ```python
 from qocc.core.cache import CompilationCache
@@ -178,7 +199,7 @@ qocc trace compare bundle.zip replayed.zip --report diff/
 
 ```bash
 pip install -e ".[dev]"
-pytest                 # ~130 tests
+pytest                 # ~233 tests
 ruff check .
 mypy qocc/
 ```
