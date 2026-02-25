@@ -155,10 +155,39 @@ def register_adapter(name: str, cls: type[BaseAdapter]) -> None:
     _REGISTRY[name] = cls
 
 
+def _discover_entry_point_adapters() -> None:
+    """Auto-discover adapters registered via ``qocc.adapters`` entry-point group."""
+    import importlib.metadata
+
+    try:
+        eps = importlib.metadata.entry_points()
+        # Python 3.12+ returns a SelectableGroups; older returns dict
+        group = eps.select(group="qocc.adapters") if hasattr(eps, "select") else eps.get("qocc.adapters", [])
+        for ep in group:
+            try:
+                cls = ep.load()
+                if ep.name not in _REGISTRY:
+                    _REGISTRY[ep.name] = cls
+            except Exception:
+                pass  # skip broken entry points
+    except Exception:
+        pass
+
+
 def get_adapter(name: str) -> BaseAdapter:
-    """Instantiate and return the adapter registered under *name*."""
+    """Instantiate and return the adapter registered under *name*.
+
+    Resolution order:
+    1. Explicit ``register_adapter()`` calls.
+    2. ``qocc.adapters`` entry-point group (auto-discovered once).
+    3. Built-in lazy imports for ``"qiskit"`` and ``"cirq"``.
+    """
     if name not in _REGISTRY:
-        # try lazy import
+        # Try entry-point discovery
+        _discover_entry_point_adapters()
+
+    if name not in _REGISTRY:
+        # Built-in lazy import fallback
         if name == "qiskit":
             from qocc.adapters.qiskit_adapter import QiskitAdapter  # noqa: F811
             return QiskitAdapter()

@@ -53,16 +53,31 @@ def evaluate_clifford_contract(
     spec: ContractSpec,
     circuit_before: Any,
     circuit_after: Any,
+    counts_before: dict[str, int] | None = None,
+    counts_after: dict[str, int] | None = None,
 ) -> ContractResult:
     """Evaluate Clifford equivalence contract.
 
     If both circuits are Clifford, attempt exact stabilizer comparison.
-    Otherwise, fall back to a note that sampling should be used.
+    Otherwise, fall back to a distribution (TVD) contract if simulation
+    counts are provided.
     """
     before_clifford = is_clifford_circuit(circuit_before)
     after_clifford = is_clifford_circuit(circuit_after)
 
     if not before_clifford or not after_clifford:
+        # Fall back to distribution contract if counts available
+        if counts_before and counts_after:
+            from qocc.contracts.eval_sampling import evaluate_distribution_contract
+
+            fallback_result = evaluate_distribution_contract(
+                spec, counts_before, counts_after,
+            )
+            fallback_result.details["method"] = "clifford_fallback_to_distribution"
+            fallback_result.details["before_is_clifford"] = before_clifford
+            fallback_result.details["after_is_clifford"] = after_clifford
+            return fallback_result
+
         return ContractResult(
             name=spec.name,
             passed=False,
@@ -70,7 +85,7 @@ def evaluate_clifford_contract(
                 "method": "clifford_check",
                 "before_is_clifford": before_clifford,
                 "after_is_clifford": after_clifford,
-                "note": "Non-Clifford circuit detected. Use distribution/observable contract instead.",
+                "note": "Non-Clifford circuit detected and no simulation counts available for fallback.",
             },
         )
 

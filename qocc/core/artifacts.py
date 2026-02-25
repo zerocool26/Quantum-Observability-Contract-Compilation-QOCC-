@@ -106,6 +106,10 @@ class ArtifactStore:
     def write_summary_report(self, md: str) -> Path:
         return self.write_text("reports/summary.md", md)
 
+    def write_cache_index(self, entries: list[dict[str, Any]]) -> Path:
+        """Write cache hit/miss index for reproducibility auditing."""
+        return self.write_json("cache_index.json", entries)
+
     # ------------------------------------------------------------------
     # Zip export
     # ------------------------------------------------------------------

@@ -42,6 +42,14 @@ all = ["qocc[qiskit,cirq,dev]"]
 [project.scripts]
 qocc = "qocc.cli.main:cli"
 
+[project.entry-points."qocc.adapters"]
+# Third-party adapters register here, e.g.:
+# my_adapter = "my_package.adapter:MyAdapter"
+
+[project.entry-points."qocc.evaluators"]
+# Third-party contract evaluators register here, e.g.:
+# my_eval = "my_package.evaluator:my_evaluator_fn"
+
 [project.urls]
 Repository = "https://github.com/zerocool26/Quantum-Observability-Contract-Compilation-QOCC-"
 

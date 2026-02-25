@@ -193,3 +193,59 @@ def chi_square_test(
         "p_value": float(p_value),
         "passed": bool(p_value > alpha),
     }
+
+
+def g_test(
+    counts_a: dict[str, int],
+    counts_b: dict[str, int],
+    alpha: float = 0.05,
+) -> dict[str, Any]:
+    """G-test (log-likelihood ratio) between two count distributions.
+
+    Uses the Williams correction for small samples.
+
+    Tests H0: the two distributions are the same.
+
+    Returns:
+        Dict with ``statistic``, ``p_value``, ``passed`` (True if NOT rejected).
+    """
+    keys = sorted(set(counts_a) | set(counts_b))
+    obs = np.array([counts_a.get(k, 0) for k in keys], dtype=float)
+    exp = np.array([counts_b.get(k, 0) for k in keys], dtype=float)
+
+    total_obs = obs.sum()
+    total_exp = exp.sum()
+    if total_exp > 0:
+        exp = exp * (total_obs / total_exp)
+
+    mask = (exp > 0) & (obs > 0)
+    obs_m = obs[mask]
+    exp_m = exp[mask]
+
+    if len(obs_m) <= 1:
+        return {"statistic": 0.0, "p_value": 1.0, "passed": True}
+
+    # G = 2 Σ O_i ln(O_i / E_i)
+    g_stat = float(2.0 * np.sum(obs_m * np.log(obs_m / exp_m)))
+
+    # Williams correction: q = 1 + (k+1)/(6*n) for k categories, n total
+    k = len(obs_m)
+    q = 1.0 + (k + 1) / (6.0 * total_obs) if total_obs > 0 else 1.0
+    g_corrected = g_stat / q if q > 0 else g_stat
+
+    # p-value from chi-square distribution with k-1 df
+    try:
+        from scipy import stats as sp_stats  # type: ignore[import-untyped]
+        p_value = float(1.0 - sp_stats.chi2.cdf(g_corrected, df=k - 1))
+    except ImportError:
+        # Rough approximation without scipy
+        p_value = 1.0 if g_corrected < k - 1 else 0.0
+
+    return {
+        "statistic": g_corrected,
+        "statistic_raw": g_stat,
+        "p_value": p_value,
+        "passed": bool(p_value > alpha),
+        "df": k - 1,
+        "williams_correction": q,
+    }

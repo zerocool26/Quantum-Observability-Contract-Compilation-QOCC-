@@ -9,7 +9,9 @@ from typing import Any
 
 from qocc.contracts.spec import ContractResult, ContractSpec
 from qocc.contracts.stats import (
+    chi_square_test,
     expectation_ci_hoeffding,
+    g_test,
     total_variation_distance,
     tvd_bootstrap_ci,
 )
@@ -23,12 +25,48 @@ def evaluate_distribution_contract(
     """Evaluate a distribution-preservation contract via TVD.
 
     The contract passes if the upper CI of the TVD is below the tolerance.
+    An optional ``spec.spec["test"]`` key can select ``"chi_square"`` or
+    ``"g_test"`` instead of the default TVD bootstrap.
     """
     tolerance = spec.tolerances.get("tvd", 0.1)
     confidence_level = spec.confidence.get("level", 0.95)
     seed = int(spec.resource_budget.get("seed", 42))
     n_bootstrap = int(spec.resource_budget.get("n_bootstrap", 1000))
 
+    # Choose test method
+    test_method = spec.spec.get("test", "tvd")
+
+    if test_method == "chi_square":
+        alpha = 1.0 - confidence_level
+        chi_result = chi_square_test(counts_before, counts_after, alpha=alpha)
+        return ContractResult(
+            name=spec.name,
+            passed=chi_result["passed"],
+            details={
+                "method": "chi_square",
+                "statistic": chi_result["statistic"],
+                "p_value": chi_result["p_value"],
+                "alpha": alpha,
+            },
+        )
+
+    if test_method == "g_test":
+        alpha = 1.0 - confidence_level
+        g_result = g_test(counts_before, counts_after, alpha=alpha)
+        return ContractResult(
+            name=spec.name,
+            passed=g_result["passed"],
+            details={
+                "method": "g_test",
+                "statistic": g_result["statistic"],
+                "p_value": g_result["p_value"],
+                "alpha": alpha,
+                "df": g_result.get("df"),
+                "williams_correction": g_result.get("williams_correction"),
+            },
+        )
+
+    # Default: TVD bootstrap
     tvd_point = total_variation_distance(counts_before, counts_after)
     ci = tvd_bootstrap_ci(
         counts_before,
@@ -44,6 +82,7 @@ def evaluate_distribution_contract(
         name=spec.name,
         passed=passed,
         details={
+            "method": "tvd",
             "tvd_point": tvd_point,
             "tvd_ci": ci,
             "tolerance": tolerance,

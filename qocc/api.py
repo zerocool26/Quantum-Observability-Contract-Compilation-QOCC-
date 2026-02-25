@@ -9,14 +9,20 @@ Provides the primary entrypoints:
 
 from __future__ import annotations
 
+import difflib
 import json
+import os
+import platform
+import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 from qocc.adapters.base import get_adapter
 from qocc.core.artifacts import ArtifactStore
+from qocc.core.cache import CompilationCache
 from qocc.core.circuit_handle import PipelineSpec
 from qocc.trace.emitter import TraceEmitter
 
@@ -93,14 +99,58 @@ def run_trace(
         span.set_attribute("hash_before", handle.stable_hash()[:16])
         span.set_attribute("hash_after", normalized.stable_hash()[:16])
 
-    # 3. Store input circuit
+    # 3. Store input circuit (original) and normalized circuit
     with emitter.span("store_input") as span:
+        if handle.qasm3:
+            store.write_circuit("input.qasm", handle.qasm3)
         if normalized.qasm3:
-            store.write_circuit("input.qasm", normalized.qasm3)
+            store.write_circuit("normalized.qasm", normalized.qasm3)
 
-    # 4. Compile
+    # 4. Compile (with cache lookup)
+    cache = CompilationCache()
+    cache_key = CompilationCache.cache_key(
+        circuit_hash=normalized.stable_hash(),
+        pipeline_dict=pipeline_spec.to_dict(),
+        backend_version=adapter.describe_backend().version,
+    )
+    cache_index: list[dict[str, Any]] = []
+
     with emitter.span("compile", attributes={"pipeline": pipeline_spec.to_dict()}) as span:
-        compile_result = adapter.compile(normalized, pipeline_spec)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            span.set_attribute("cache_hit", True)
+            span.add_event("cache_hit", key=cache_key[:16])
+            cache_index.append({
+                "key": cache_key[:16],
+                "hit": True,
+                "circuit_hash": normalized.stable_hash()[:16],
+                "pipeline_hash": pipeline_spec.stable_hash()[:16],
+                "timestamp": time.time(),
+            })
+            # Re-compile anyway to get the actual circuit handle
+            compile_result = adapter.compile(normalized, pipeline_spec)
+        else:
+            span.set_attribute("cache_hit", False)
+            span.add_event("cache_miss", key=cache_key[:16])
+            compile_result = adapter.compile(normalized, pipeline_spec)
+            # Store in cache
+            cache.put(
+                cache_key,
+                compile_result.to_dict(),
+                circuit_qasm=compile_result.circuit.qasm3,
+                metadata={
+                    "circuit_hash": normalized.stable_hash(),
+                    "pipeline_hash": pipeline_spec.stable_hash(),
+                },
+            )
+            cache_index.append({
+                "key": cache_key[:16],
+                "hit": False,
+                "circuit_hash": normalized.stable_hash()[:16],
+                "pipeline_hash": pipeline_spec.stable_hash()[:16],
+                "timestamp": time.time(),
+            })
+
         compiled = compile_result.circuit
         span.set_attribute("compiled_hash", compiled.stable_hash()[:16])
         span.set_attribute("pass_count", len(compile_result.pass_log))
@@ -128,6 +178,14 @@ def run_trace(
             span.set_attribute("reproducible", nd.reproducible)
             span.set_attribute("unique_hashes", nd.unique_hashes)
             span.set_attribute("confidence", nd.confidence)
+            # Record as span event per spec §1.3
+            if not nd.reproducible:
+                span.add_event(
+                    "nondeterminism_detected",
+                    unique_hashes=nd.unique_hashes,
+                    confidence=nd.confidence,
+                    hash_counts=nd.hash_counts,
+                )
 
     # 8. Write bundle files
     with emitter.span("write_bundle") as span:
@@ -144,6 +202,13 @@ def run_trace(
         })
         store.write_trace(emitter.to_dicts())
 
+        # Cache index for reproducibility auditing
+        store.write_cache_index(cache_index)
+
+        # Write empty contracts / contract_results so bundles validate
+        store.write_contracts([])
+        store.write_contract_results([])
+
         # Write nondeterminism report if available
         if nondet_report:
             store.write_json("nondeterminism.json", nondet_report)
@@ -158,6 +223,7 @@ def run_trace(
             metrics_after=metrics_after.to_dict(),
             pipeline_spec=pipeline_spec,
             pass_log=compile_result.pass_log,
+            nondet_report=nondet_report,
         )
         store.write_summary_report(summary)
 
@@ -259,6 +325,67 @@ def compare_bundles(
     cr_a = bundle_a.get("contract_results", [])
     cr_b = bundle_b.get("contract_results", [])
     report["diffs"]["contracts"] = {"a": cr_a, "b": cr_b}
+
+    # Pass-log structural diff
+    pass_log_a = metrics_a.get("pass_log", [])
+    pass_log_b = metrics_b.get("pass_log", [])
+    passes_a = [p.get("pass_name", "") for p in pass_log_a]
+    passes_b = [p.get("pass_name", "") for p in pass_log_b]
+    pass_diff: dict[str, Any] = {}
+    if passes_a != passes_b:
+        sm = difflib.SequenceMatcher(None, passes_a, passes_b)
+        opcodes = []
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag != "equal":
+                opcodes.append({
+                    "action": tag,
+                    "a": passes_a[i1:i2],
+                    "b": passes_b[j1:j2],
+                    "a_range": [i1, i2],
+                    "b_range": [j1, j2],
+                })
+        added = [p for p in passes_b if p not in passes_a]
+        removed = [p for p in passes_a if p not in passes_b]
+        pass_diff = {
+            "passes_a": passes_a,
+            "passes_b": passes_b,
+            "added": added,
+            "removed": removed,
+            "opcodes": opcodes,
+        }
+    report["diffs"]["pass_log"] = pass_diff
+
+    # Circuit hash diffs
+    circuit_hashes: dict[str, Any] = {}
+    for label, bndl in [("a", bundle_a), ("b", bundle_b)]:
+        root = bndl.get("_root")
+        hashes: dict[str, str | None] = {"input": None, "compiled": None}
+        if root:
+            root_p = Path(root)
+            for name, sub in [("input", "circuits/input.qasm"), ("compiled", "circuits/selected.qasm")]:
+                fpath = root_p / sub
+                if fpath.exists():
+                    from qocc.core.hashing import hash_string
+                    hashes[name] = hash_string(fpath.read_text(encoding="utf-8"))[:16]
+        circuit_hashes[label] = hashes
+    hash_changed = {
+        k: {"a": circuit_hashes["a"].get(k), "b": circuit_hashes["b"].get(k)}
+        for k in ["input", "compiled"]
+        if circuit_hashes["a"].get(k) != circuit_hashes["b"].get(k)
+    }
+    report["diffs"]["circuit_hashes"] = hash_changed
+
+    # Seeds diff
+    seeds_a = bundle_a.get("seeds", {})
+    seeds_b = bundle_b.get("seeds", {})
+    seeds_diff: dict[str, Any] = {}
+    if seeds_a != seeds_b:
+        for k in sorted(set(list(seeds_a.keys()) + list(seeds_b.keys()))):
+            va = seeds_a.get(k)
+            vb = seeds_b.get(k)
+            if va != vb:
+                seeds_diff[k] = {"a": va, "b": vb}
+    report["diffs"]["seeds"] = seeds_diff
 
     # ── Regression-cause analysis ────────────────────────────
     regression = _analyze_regression_causes(bundle_a, bundle_b, metrics_diff, env_diff)
@@ -398,6 +525,33 @@ def check_contract(
     for spec in specs:
         result: ContractResult
 
+        # ── Check evaluator registry first (plugin dispatch) ─
+        if spec.evaluator not in ("auto", ""):
+            from qocc.contracts.registry import get_evaluator
+
+            custom_fn = get_evaluator(spec.evaluator)
+            if custom_fn is not None:
+                try:
+                    result = custom_fn(
+                        spec,
+                        counts_before=sim_counts_input,
+                        counts_after=sim_counts_compiled,
+                        input_handle=input_handle,
+                        compiled_handle=compiled_handle,
+                        adapter=adapter,
+                        bundle=bundle,
+                    )
+                    results.append(result.to_dict())
+                    continue
+                except Exception as exc:
+                    result = ContractResult(
+                        name=spec.name,
+                        passed=False,
+                        details={"error": f"Custom evaluator {spec.evaluator!r} failed: {exc}"},
+                    )
+                    results.append(result.to_dict())
+                    continue
+
         # ── Distribution contract ────────────────────────────
         if spec.type == "distribution":
             if sim_counts_input and sim_counts_compiled:
@@ -440,6 +594,8 @@ def check_contract(
             if input_handle and compiled_handle:
                 result = evaluate_clifford_contract(
                     spec, input_handle, compiled_handle,
+                    counts_before=sim_counts_input,
+                    counts_after=sim_counts_compiled,
                 )
             else:
                 result = ContractResult(
@@ -657,27 +813,81 @@ def search_compile(
     with emitter.span("normalize") as span:
         normalized = adapter.normalize(handle)
         span.set_attribute("hash", normalized.stable_hash()[:16])
+        normalize_span_id = span.span_id
 
     # ── 2. Generate candidates ───────────────────────────────
     with emitter.span("generate_candidates") as span:
         candidates = generate_candidates(config)
         span.set_attribute("num_candidates", len(candidates))
 
-    # ── 3. Compile each candidate ────────────────────────────
+    # ── 3. Compile each candidate (with cache) ──────────────
     circuit_handles: dict[str, Any] = {}
-    with emitter.span("compile_candidates") as span:
+    cache = CompilationCache()
+    cache_index: list[dict[str, Any]] = []
+
+    with emitter.span("compile_candidates") as compile_parent:
         for candidate in candidates:
-            try:
-                result = adapter.compile(normalized, candidate.pipeline)
-                compiled = result.circuit
-                circuit_handles[candidate.candidate_id] = compiled
+            with emitter.span(
+                f"compile/{candidate.candidate_id[:8]}",
+                attributes={"candidate_id": candidate.candidate_id},
+            ) as cspan:
+                # Add span link back to normalize span
+                cspan.add_link(
+                    trace_id=emitter.trace_id,
+                    span_id=normalize_span_id,
+                    relationship="derived_from",
+                )
+                try:
+                    # Cache lookup
+                    c_key = CompilationCache.cache_key(
+                        circuit_hash=normalized.stable_hash(),
+                        pipeline_dict=candidate.pipeline.to_dict(),
+                        backend_version=adapter.describe_backend().version,
+                    )
+                    cached = cache.get(c_key)
+                    if cached is not None:
+                        cspan.set_attribute("cache_hit", True)
+                        cspan.add_event("cache_hit", key=c_key[:16])
+                        cache_index.append({
+                            "key": c_key[:16],
+                            "hit": True,
+                            "candidate_id": candidate.candidate_id,
+                            "timestamp": time.time(),
+                        })
+                    else:
+                        cspan.add_event("cache_miss", key=c_key[:16])
+                        cache_index.append({
+                            "key": c_key[:16],
+                            "hit": False,
+                            "candidate_id": candidate.candidate_id,
+                            "timestamp": time.time(),
+                        })
 
-                m = adapter.get_metrics(compiled)
-                candidate.metrics = m.to_dict()
-            except Exception as exc:
-                candidate.metrics = {"error": str(exc)}
+                    result = adapter.compile(normalized, candidate.pipeline)
+                    compiled = result.circuit
+                    circuit_handles[candidate.candidate_id] = compiled
 
-        span.set_attribute("compiled_count", len(circuit_handles))
+                    if cached is None:
+                        cache.put(
+                            c_key,
+                            result.to_dict(),
+                            circuit_qasm=compiled.qasm3,
+                            metadata={"candidate_id": candidate.candidate_id},
+                        )
+
+                    m = adapter.get_metrics(compiled)
+                    candidate.metrics = m.to_dict()
+                    cspan.set_attribute("cache_hit", cached is not None)
+                except Exception as exc:
+                    candidate.metrics = {"error": str(exc)}
+                    cspan.record_exception(exc)
+                    cspan.add_event(
+                        "candidate_compile_error",
+                        candidate_id=candidate.candidate_id,
+                        error=str(exc),
+                    )
+
+        compile_parent.set_attribute("compiled_count", len(circuit_handles))
 
     # ── 4. Surrogate score & rank ────────────────────────────
     with emitter.span("score_and_rank") as span:
@@ -741,6 +951,18 @@ def search_compile(
     })
     store.write_env()
     store.write_trace(emitter.to_dicts())
+    store.write_cache_index(cache_index)
+
+    # Write input & normalized circuits
+    if handle.qasm3:
+        store.write_circuit("input.qasm", handle.qasm3)
+    if normalized.qasm3:
+        store.write_circuit("normalized.qasm", normalized.qasm3)
+
+    # Write candidate circuits
+    for cid, ch in circuit_handles.items():
+        if ch.qasm3:
+            store.write_circuit(f"candidates/{cid}.qasm", ch.qasm3)
 
     # Write rankings table
     rankings = [c.to_dict() for c in ranked]
@@ -749,11 +971,33 @@ def search_compile(
     # Write selected candidate details
     store.write_json("search_result.json", selection.to_dict())
 
+    # Write contracts and contract results
+    contract_spec_dicts = [s.to_dict() for s in contract_specs]
+    all_contract_results: list[dict[str, Any]] = []
+    for c in validated:
+        for cr in c.contract_results:
+            all_contract_results.append(cr)
+    store.write_contracts(contract_spec_dicts)
+    store.write_contract_results(all_contract_results)
+
     # Store selected circuit if available
     if selection.selected:
         sel_handle = circuit_handles.get(selection.selected.candidate_id)
         if sel_handle and sel_handle.qasm3:
             store.write_circuit("selected.qasm", sel_handle.qasm3)
+
+    # Generate search summary report
+    search_summary = _generate_search_summary(
+        run_id=run_id,
+        adapter_name=adapter_name,
+        num_candidates=len(candidates),
+        top_k=top_k,
+        selection=selection,
+        ranked=ranked,
+        contract_specs=contract_specs,
+        all_contract_results=all_contract_results,
+    )
+    store.write_summary_report(search_summary)
 
     store.export_zip(zip_path)
 
@@ -921,6 +1165,8 @@ def _generate_summary(
     metrics_after: dict[str, Any],
     pipeline_spec: Any,
     pass_log: list[Any],
+    nondet_report: dict[str, Any] | None = None,
+    contract_results: list[dict[str, Any]] | None = None,
 ) -> str:
     """Generate a Markdown summary report for a trace bundle."""
     lines = [
@@ -928,6 +1174,12 @@ def _generate_summary(
         f"",
         f"**Run ID:** `{run_id}`",
         f"**Adapter:** {adapter_name}",
+        f"",
+        f"## Environment",
+        f"",
+        f"- **OS:** {platform.platform()}",
+        f"- **Python:** {sys.version.split()[0]}",
+        f"- **QOCC:** 0.1.0",
         f"",
         f"## Input Circuit",
         f"",
@@ -970,14 +1222,129 @@ def _generate_summary(
         d = entry.to_dict() if hasattr(entry, "to_dict") else entry
         lines.append(f"- **{d['pass_name']}** (order {d['order']}, {d.get('duration_ms', '?')} ms)")
 
+    # Contract results table
+    if contract_results:
+        lines.extend([
+            f"",
+            f"## Contract Results",
+            f"",
+            f"| Contract | Type | Passed |",
+            f"|----------|------|--------|",
+        ])
+        for cr in contract_results:
+            icon = "✅" if cr.get("passed") else "❌"
+            lines.append(f"| {cr.get('name', '?')} | {cr.get('details', {}).get('type', '?')} | {icon} |")
+
+    # Reproducibility / nondeterminism
     lines.extend([
         f"",
         f"## Reproducibility",
         f"",
-        f"This bundle contains all information needed to reproduce the compilation.",
-        f"Re-run with `qocc trace run` using the same pipeline spec and seeds.",
     ])
 
+    if nondet_report:
+        reproducible = nondet_report.get("reproducible", True)
+        if not reproducible:
+            lines.append(
+                f"> ⚠ **Nondeterminism detected:** {nondet_report.get('unique_hashes', '?')} "
+                f"unique hashes in {nondet_report.get('num_runs', '?')} runs "
+                f"(confidence {nondet_report.get('confidence', 0) * 100:.0f}%)"
+            )
+        else:
+            lines.append(
+                f"Compilation is reproducible ({nondet_report.get('num_runs', '?')} runs, "
+                f"confidence {nondet_report.get('confidence', 0) * 100:.0f}%)."
+            )
+    else:
+        lines.append("Re-run with `qocc trace run --repeat N` to detect nondeterminism.")
+
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def _generate_search_summary(
+    run_id: str,
+    adapter_name: str,
+    num_candidates: int,
+    top_k: int,
+    selection: Any,
+    ranked: list[Any],
+    contract_specs: list[Any],
+    all_contract_results: list[dict[str, Any]],
+) -> str:
+    """Generate a Markdown summary report for a search bundle."""
+    lines = [
+        "# QOCC Search Compilation Summary",
+        "",
+        f"**Run ID:** `{run_id}`",
+        f"**Adapter:** {adapter_name}",
+        f"**Candidates:** {num_candidates} generated, top {top_k} validated",
+        f"**Feasible:** {'Yes' if selection.feasible else 'No'}",
+        "",
+        "## Environment",
+        "",
+        f"- **OS:** {platform.platform()}",
+        f"- **Python:** {sys.version.split()[0]}",
+        "",
+        "## Selection",
+        "",
+        f"**Reason:** {selection.reason}",
+        "",
+    ]
+
+    if selection.selected:
+        s = selection.selected
+        lines.extend([
+            f"### Selected Candidate: `{s.candidate_id}`",
+            "",
+            f"- **Surrogate score:** {s.surrogate_score:.4f}",
+            f"- **Validated:** {s.validated}",
+            "",
+        ])
+
+    # Pareto frontier
+    if selection.pareto_frontier:
+        lines.extend([
+            "## Pareto Frontier",
+            "",
+            f"**{len(selection.pareto_frontier)}** non-dominated candidates.",
+            "",
+        ])
+
+    # Candidate rankings table
+    lines.extend([
+        "## Candidate Rankings",
+        "",
+        "| # | ID | Opt Level | Score | Depth | 2Q Gates | Validated | Contracts |",
+        "|---|-----|-----------|-------|-------|----------|-----------|-----------|",
+    ])
+
+    for i, c in enumerate(ranked[:20], 1):
+        cid = c.candidate_id[:12]
+        opt = c.pipeline.to_dict().get("optimization_level", "?")
+        score = f"{c.surrogate_score:.4f}" if c.surrogate_score < float("inf") else "—"
+        depth = c.metrics.get("depth", "—")
+        g2q = c.metrics.get("gates_2q", "—")
+        val = "✅" if c.validated else "—"
+        n_pass = sum(1 for r in c.contract_results if r.get("passed")) if c.contract_results else "—"
+        n_total = len(c.contract_results) if c.contract_results else 0
+        contracts_str = f"{n_pass}/{n_total}" if n_total else "—"
+        lines.append(f"| {i} | `{cid}` | {opt} | {score} | {depth} | {g2q} | {val} | {contracts_str} |")
+
+    # Contract results
+    if all_contract_results:
+        lines.extend([
+            "",
+            "## Contract Results",
+            "",
+            "| Contract | Type | Passed |",
+            "|----------|------|--------|",
+        ])
+        for cr in all_contract_results:
+            icon = "✅" if cr.get("passed") else "❌"
+            lines.append(f"| {cr.get('name', '?')} | {cr.get('details', {}).get('type', '?')} | {icon} |")
+
+    lines.append("")
     return "\n".join(lines) + "\n"
 
 
@@ -1008,6 +1375,41 @@ def _generate_comparison_md(report: dict[str, Any]) -> str:
             lines.append("")
     else:
         lines.extend(["## Metrics", "", "No metric differences detected.", ""])
+
+    # Circuit hash diffs
+    hash_diffs = diffs.get("circuit_hashes", {})
+    if hash_diffs:
+        lines.extend(["## Circuit Hash Differences", ""])
+        for name, hd in hash_diffs.items():
+            lines.append(f"- **{name}:** `{hd.get('a', '—')}` → `{hd.get('b', '—')}`")
+        lines.append("")
+
+    # Seeds diff
+    seeds_diff = diffs.get("seeds", {})
+    if seeds_diff:
+        lines.extend(["## Seed Differences", ""])
+        for k, v in seeds_diff.items():
+            lines.append(f"- **{k}:** `{v.get('a', '—')}` → `{v.get('b', '—')}`")
+        lines.append("")
+
+    # Pass-log diff
+    pass_diff = diffs.get("pass_log", {})
+    if pass_diff:
+        lines.extend(["## Pass-Log Differences", ""])
+        added = pass_diff.get("added", [])
+        removed = pass_diff.get("removed", [])
+        if added:
+            lines.append(f"- **Added:** {', '.join(added)}")
+        if removed:
+            lines.append(f"- **Removed:** {', '.join(removed)}")
+        opcodes = pass_diff.get("opcodes", [])
+        if opcodes:
+            lines.extend(["", "| Action | Bundle A | Bundle B |", "|--------|----------|----------|"])
+            for op in opcodes:
+                a_str = ", ".join(op.get("a", []))
+                b_str = ", ".join(op.get("b", []))
+                lines.append(f"| {op['action']} | {a_str} | {b_str} |")
+        lines.append("")
 
     # Environment
     env_diff = diffs.get("environment", {})
