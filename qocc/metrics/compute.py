@@ -78,8 +78,13 @@ def _metrics_qiskit(
     if coupling_map is not None:
         topo_violations = _topology_violations_qiskit(qc, coupling_map)
 
-    # Duration estimate
+    # Duration estimate (simple summation)
     duration_est = _duration_estimate(gate_counts, duration_model)
+
+    # Parallel-aware duration with idle penalties
+    parallel_dur = None
+    if duration_model is not None:
+        parallel_dur = _parallel_duration_qiskit(qc, duration_model)
 
     # Proxy error
     proxy_error = _proxy_error(gate_counts, depth, error_model)
@@ -94,6 +99,7 @@ def _metrics_qiskit(
         "gate_histogram": gate_counts,
         "topology_violations": topo_violations,
         "duration_estimate": duration_est,
+        "duration_parallel": parallel_dur,
         "proxy_error_score": proxy_error,
     }
 
@@ -177,6 +183,12 @@ def _metrics_cirq(
     )
 
     duration_est = _duration_estimate(gate_counts, duration_model)
+
+    # Parallel-aware duration with idle penalties
+    parallel_dur = None
+    if duration_model is not None:
+        parallel_dur = _parallel_duration_cirq(native, duration_model)
+
     proxy_error = _proxy_error(gate_counts, depth, error_model)
 
     return {
@@ -189,6 +201,7 @@ def _metrics_cirq(
         "gate_histogram": gate_counts,
         "topology_violations": None,
         "duration_estimate": duration_est,
+        "duration_parallel": parallel_dur,
         "proxy_error_score": proxy_error,
     }
 
@@ -209,6 +222,7 @@ def _metrics_generic(circuit: CircuitHandle) -> dict[str, Any]:
         "gate_histogram": {},
         "topology_violations": None,
         "duration_estimate": None,
+        "duration_parallel": None,
         "proxy_error_score": None,
     }
 
@@ -221,7 +235,11 @@ def _duration_estimate(
     gate_counts: dict[str, int],
     duration_model: dict[str, float] | None,
 ) -> float | None:
-    """duration = Σ count(gate_type) * duration(gate_type)."""
+    """duration = Σ count(gate_type) * duration(gate_type).
+
+    Simple summation fallback — does not account for parallelism.
+    Prefer ``_parallel_duration_*`` when circuit structure is available.
+    """
     if duration_model is None:
         return None
     total = 0.0
@@ -229,6 +247,105 @@ def _duration_estimate(
         dur = duration_model.get(gate, duration_model.get("default", 0.0))
         total += count * dur
     return total
+
+
+def _parallel_duration_qiskit(
+    qc: Any,
+    duration_model: dict[str, float],
+    idle_penalty_rate: float = 0.001,
+) -> dict[str, float]:
+    """Compute parallel-aware duration + idle penalties for a Qiskit circuit.
+
+    Returns dict with keys: ``critical_path``, ``idle_penalty``, ``total``.
+
+    *critical_path* = Σ_layers max(gate_duration in layer)
+    *idle_penalty*  = Σ_layers Σ_idle_qubits layer_dur × idle_penalty_rate
+    """
+    try:
+        from qiskit.converters import circuit_to_dag  # type: ignore[import-untyped]
+    except ImportError:
+        return {"critical_path": 0.0, "idle_penalty": 0.0, "total": 0.0}
+
+    dag = circuit_to_dag(qc)
+    default_dur = duration_model.get("default", 0.0)
+    n_qubits = qc.num_qubits
+
+    critical_path = 0.0
+    idle_penalty = 0.0
+
+    for layer_dict in dag.layers():
+        layer_dag = layer_dict["graph"]
+        active_qubits: set[int] = set()
+        layer_dur = 0.0
+
+        for node in layer_dag.op_nodes():
+            name = node.op.name
+            if name in ("barrier", "measure", "reset"):
+                continue
+            dur = duration_model.get(name, default_dur)
+            layer_dur = max(layer_dur, dur)
+            for qarg in node.qargs:
+                active_qubits.add(qc.find_bit(qarg).index)
+
+        if layer_dur == 0.0:
+            continue
+
+        critical_path += layer_dur
+        n_idle = n_qubits - len(active_qubits)
+        idle_penalty += n_idle * layer_dur * idle_penalty_rate
+
+    return {
+        "critical_path": critical_path,
+        "idle_penalty": idle_penalty,
+        "total": critical_path + idle_penalty,
+    }
+
+
+def _parallel_duration_cirq(
+    circuit: Any,
+    duration_model: dict[str, float],
+    idle_penalty_rate: float = 0.001,
+) -> dict[str, float]:
+    """Compute parallel-aware duration + idle penalties for a Cirq circuit.
+
+    Returns dict with keys: ``critical_path``, ``idle_penalty``, ``total``.
+    """
+    try:
+        import cirq  # type: ignore[import-untyped]
+    except ImportError:
+        return {"critical_path": 0.0, "idle_penalty": 0.0, "total": 0.0}
+
+    all_qubits = sorted(circuit.all_qubits())
+    n_qubits = len(all_qubits)
+    default_dur = duration_model.get("default", 0.0)
+
+    critical_path = 0.0
+    idle_penalty = 0.0
+
+    for moment in circuit:
+        active_qubits: set[Any] = set()
+        layer_dur = 0.0
+
+        for op in moment:
+            if cirq.is_measurement(op):
+                continue
+            name = str(op.gate) if op.gate else type(op).__name__
+            dur = duration_model.get(name, default_dur)
+            layer_dur = max(layer_dur, dur)
+            active_qubits.update(op.qubits)
+
+        if layer_dur == 0.0:
+            continue
+
+        critical_path += layer_dur
+        n_idle = n_qubits - len(active_qubits)
+        idle_penalty += n_idle * layer_dur * idle_penalty_rate
+
+    return {
+        "critical_path": critical_path,
+        "idle_penalty": idle_penalty,
+        "total": critical_path + idle_penalty,
+    }
 
 
 def _proxy_error(

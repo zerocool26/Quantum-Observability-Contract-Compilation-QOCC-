@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import logging
 import os
 import platform
 import sys
@@ -25,6 +26,8 @@ from qocc.core.artifacts import ArtifactStore
 from qocc.core.cache import CompilationCache
 from qocc.core.circuit_handle import PipelineSpec
 from qocc.trace.emitter import TraceEmitter
+
+logger = logging.getLogger("qocc")
 
 
 def run_trace(
@@ -119,6 +122,7 @@ def run_trace(
         circuit_hash=normalized.stable_hash(),
         pipeline_dict=pipeline_spec.to_dict(),
         backend_version=adapter.describe_backend().version,
+        extra={"seeds": seeds},
     )
     cache_index: list[dict[str, Any]] = []
 
@@ -141,8 +145,9 @@ def run_trace(
             if compile_result.circuit.native_circuit is None and compile_result.circuit.qasm3:
                 try:
                     compile_result.circuit = adapter.ingest(compile_result.circuit.qasm3)
-                except Exception:
-                    # Fallback: re-compile
+                except Exception as exc:
+                    logger.warning("Cache re-ingest failed, recompiling: %s", exc)
+                    span.add_event("cache_reingest_failed", error=str(exc))
                     compile_result = adapter.compile(normalized, pipeline_spec, emitter=emitter)
         else:
             span.set_attribute("cache_hit", False)
@@ -504,13 +509,13 @@ def check_contract(
         if adapter and input_qasm.exists():
             try:
                 input_handle = adapter.ingest(str(input_qasm))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to ingest input circuit from bundle: %s", exc)
         if adapter and compiled_qasm.exists():
             try:
                 compiled_handle = adapter.ingest(str(compiled_qasm))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to ingest compiled circuit from bundle: %s", exc)
 
     # Pre-run simulation if adapter is available and we need distribution/observable data
     # Clamp shots to minimum of all per-contract max_shots budgets
@@ -879,14 +884,28 @@ def search_compile(
     cache = CompilationCache()
     cache_index: list[dict[str, Any]] = []
 
-    def _compile_one_candidate(candidate: Any) -> tuple[Any, Any, list[dict[str, Any]]]:
-        """Compile a single candidate and return (candidate, handle, cache_entries)."""
+    def _compile_one_candidate(candidate: Any, parent_span_id: str | None = None) -> tuple[Any, Any, list[dict[str, Any]]]:
+        """Compile a single candidate and return (candidate, handle, cache_entries).
+
+        Creates a per-candidate span linked to *parent_span_id*.
+        """
         local_cache_entries: list[dict[str, Any]] = []
+        cand_span = emitter.start_span(
+            f"compile/candidate/{candidate.candidate_id[:8]}",
+            attributes={
+                "candidate_id": candidate.candidate_id,
+                "pipeline": str(candidate.pipeline.to_dict()),
+            },
+        )
+        # Link back to the parent compile span
+        if parent_span_id:
+            cand_span.add_link(emitter.trace_id, parent_span_id, relationship="child_of_batch")
         try:
             c_key = CompilationCache.cache_key(
                 circuit_hash=normalized.stable_hash(),
                 pipeline_dict=candidate.pipeline.to_dict(),
                 backend_version=adapter.describe_backend().version,
+                extra={"seed": candidate.pipeline.parameters.get("seed")},
             )
             cached = cache.get(c_key)
             if cached is not None:
@@ -900,7 +919,8 @@ def search_compile(
                 if result.circuit.native_circuit is None and result.circuit.qasm3:
                     try:
                         result.circuit = adapter.ingest(result.circuit.qasm3)
-                    except Exception:
+                    except Exception as exc:
+                        logger.warning("Cache re-ingest failed for candidate %s: %s", candidate.candidate_id[:8], exc)
                         result = adapter.compile(normalized, candidate.pipeline)
             else:
                 local_cache_entries.append({
@@ -918,9 +938,14 @@ def search_compile(
             compiled = result.circuit
             m = adapter.get_metrics(compiled)
             candidate.metrics = m.to_dict()
+            cand_span.set_attribute("cache_hit", local_cache_entries[-1]["hit"] if local_cache_entries else False)
+            emitter.finish_span(cand_span, status="OK")
             return candidate, compiled, local_cache_entries
         except Exception as exc:
+            logger.error("Candidate %s compilation failed: %s", candidate.candidate_id[:8], exc, exc_info=True)
             candidate.metrics = {"error": str(exc)}
+            cand_span.record_exception(exc)
+            emitter.finish_span(cand_span, status="ERROR")
             return candidate, None, local_cache_entries
 
     with emitter.span("compile_candidates") as compile_parent:
@@ -928,11 +953,12 @@ def search_compile(
         import concurrent.futures
 
         max_workers = min(len(candidates), os.cpu_count() or 4, 8)
+        parent_sid = compile_parent.span_id
 
         if len(candidates) > 1 and max_workers > 1:
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
                 futures = {
-                    pool.submit(_compile_one_candidate, c): c
+                    pool.submit(_compile_one_candidate, c, parent_sid): c
                     for c in candidates
                 }
                 for future in concurrent.futures.as_completed(futures):
@@ -943,7 +969,7 @@ def search_compile(
         else:
             # Serial fallback for single candidate
             for candidate in candidates:
-                cand, compiled_handle, c_entries = _compile_one_candidate(candidate)
+                cand, compiled_handle, c_entries = _compile_one_candidate(candidate, parent_sid)
                 cache_index.extend(c_entries)
                 if compiled_handle is not None:
                     circuit_handles[cand.candidate_id] = compiled_handle

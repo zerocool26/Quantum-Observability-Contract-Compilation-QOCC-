@@ -75,21 +75,21 @@ def compile_search(
         console.print("[red]Error: Provide --input or --bundle.[/red]")
         sys.exit(1)
 
-    # Load search config
+    # Load and validate search config
+    from qocc.cli.validation import validate_json_file
+
     search_config = None
     if search_spec:
-        with open(search_spec) as f:
-            search_config = json.load(f)
+        search_config = validate_json_file(search_spec, "search_space", strict=False)
     if search_config is None:
         search_config = {}
     # Inject strategy from CLI flag
     search_config.setdefault("strategy", strategy)
 
-    # Load contracts
+    # Load and validate contracts
     contract_data = None
     if contracts:
-        with open(contracts) as f:
-            contract_data = json.load(f)
+        contract_data = validate_json_file(contracts, "contracts", strict=False)
 
     console.print(f"  Adapter: {adapter}")
     console.print(f"  Input: {circuit_source}")

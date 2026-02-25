@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 
 import click
@@ -15,7 +16,9 @@ console = Console()
 @click.argument("bundle_b", type=click.Path(exists=True))
 @click.option("--report", "-r", "report_dir", type=click.Path(), default=None,
               help="Output directory for reports.")
-def compare(bundle_a: str, bundle_b: str, report_dir: str | None) -> None:
+@click.option("--format", "-f", "output_format", type=click.Choice(["text", "json"]),
+              default="text", help="Output format: text (default) or json.")
+def compare(bundle_a: str, bundle_b: str, report_dir: str | None, output_format: str) -> None:
     """Compare two Trace Bundles and highlight differences."""
     from qocc.api import compare_bundles
 
@@ -28,6 +31,18 @@ def compare(bundle_a: str, bundle_b: str, report_dir: str | None) -> None:
     except Exception as exc:
         console.print(f"[red]Error:[/red] {exc}")
         sys.exit(1)
+
+    # JSON output mode — emit *only* JSON, no Rich decoration
+    if output_format == "json":
+        json_str = json.dumps(result, indent=2, default=str)
+        click.echo(json_str)
+        if report_dir:
+            from pathlib import Path
+            Path(report_dir).mkdir(parents=True, exist_ok=True)
+            (Path(report_dir) / "comparison.json").write_text(
+                json.dumps(result, indent=2, default=str) + "\n", encoding="utf-8"
+            )
+        return
 
     diffs = result.get("diffs", {})
     metrics_diff = diffs.get("metrics", {})

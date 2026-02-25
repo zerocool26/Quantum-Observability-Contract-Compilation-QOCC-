@@ -33,6 +33,10 @@ def contract_check(bundle: str, contracts: str) -> None:
     console.print(f"  Bundle:    {bundle}")
     console.print(f"  Contracts: {contracts}")
 
+    # Validate contracts JSON against schema
+    from qocc.cli.validation import validate_json_file
+    validate_json_file(contracts, "contracts")
+
     try:
         results = check_contract(bundle, contracts)
     except Exception as exc:
