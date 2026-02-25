@@ -17,7 +17,9 @@
         "enum": [
           "observable",
           "distribution",
-          "clifford"
+          "clifford",
+          "exact",
+          "cost"
         ]
       },
       "spec": {

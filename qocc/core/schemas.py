@@ -90,7 +90,7 @@ CONTRACTS_SCHEMA: dict[str, Any] = {
             "name": {"type": "string"},
             "type": {
                 "type": "string",
-                "enum": ["observable", "distribution", "clifford"],
+                "enum": ["observable", "distribution", "clifford", "exact", "cost"],
             },
             "spec": {"type": "object"},
             "tolerances": {"type": "object"},
@@ -143,6 +143,89 @@ TRACE_SPAN_SCHEMA: dict[str, Any] = {
     "additionalProperties": True,
 }
 
+CACHE_INDEX_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "QOCC Cache Index",
+    "type": "array",
+    "items": {
+        "type": "object",
+        "required": ["key", "hit"],
+        "properties": {
+            "key": {"type": "string"},
+            "hit": {"type": "boolean"},
+            "circuit_hash": {"type": "string"},
+            "pipeline_hash": {"type": "string"},
+            "candidate_id": {"type": "string"},
+            "timestamp": {"type": "number"},
+        },
+        "additionalProperties": True,
+    },
+}
+
+NONDETERMINISM_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "QOCC Nondeterminism Report",
+    "type": "object",
+    "required": ["reproducible", "num_runs", "unique_hashes"],
+    "properties": {
+        "reproducible": {"type": "boolean"},
+        "num_runs": {"type": "integer"},
+        "unique_hashes": {"type": "integer"},
+        "confidence": {"type": "number"},
+        "hashes": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "hash_counts": {
+            "type": "object",
+            "additionalProperties": {"type": "integer"},
+        },
+    },
+    "additionalProperties": True,
+}
+
+SEARCH_RANKINGS_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "QOCC Search Rankings",
+    "type": "array",
+    "items": {
+        "type": "object",
+        "required": ["candidate_id", "surrogate_score"],
+        "properties": {
+            "candidate_id": {"type": "string"},
+            "surrogate_score": {"type": "number"},
+            "pipeline": {"type": "object"},
+            "metrics": {"type": "object"},
+            "validated": {"type": "boolean"},
+            "contract_results": {"type": "array"},
+        },
+        "additionalProperties": True,
+    },
+}
+
+SEARCH_RESULT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "QOCC Search Result",
+    "type": "object",
+    "required": ["feasible", "reason"],
+    "properties": {
+        "feasible": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "selected": {
+            "type": ["object", "null"],
+            "properties": {
+                "candidate_id": {"type": "string"},
+                "surrogate_score": {"type": "number"},
+            },
+        },
+        "pareto_frontier": {
+            "type": ["array", "null"],
+            "items": {"type": "object"},
+        },
+    },
+    "additionalProperties": True,
+}
+
 # Registry for programmatic access
 SCHEMAS: dict[str, dict[str, Any]] = {
     "manifest": MANIFEST_SCHEMA,
@@ -152,6 +235,10 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "contracts": CONTRACTS_SCHEMA,
     "contract_results": CONTRACT_RESULTS_SCHEMA,
     "trace_span": TRACE_SPAN_SCHEMA,
+    "cache_index": CACHE_INDEX_SCHEMA,
+    "nondeterminism": NONDETERMINISM_SCHEMA,
+    "search_rankings": SEARCH_RANKINGS_SCHEMA,
+    "search_result": SEARCH_RESULT_SCHEMA,
 }
 
 
@@ -210,6 +297,19 @@ def validate_bundle(bundle_dir: str | Path) -> dict[str, list[str]]:
         results["trace.jsonl"] = trace_errors
     else:
         results["trace.jsonl"] = ["trace.jsonl missing"]
+
+    # Optional bundle files — validate if present
+    optional_maps = {
+        "cache_index.json": "cache_index",
+        "nondeterminism.json": "nondeterminism",
+        "search_rankings.json": "search_rankings",
+        "search_result.json": "search_result",
+    }
+    for fname, schema_name in optional_maps.items():
+        fp = root / fname
+        if fp.exists():
+            data = json.loads(fp.read_text(encoding="utf-8"))
+            results[fname] = validate_file(schema_name, data)
 
     return results
 

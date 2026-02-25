@@ -29,6 +29,8 @@ def compile_group() -> None:
               help="Contracts specification JSON.")
 @click.option("--topk", "-k", type=int, default=5, help="Number of candidates to validate.")
 @click.option("--shots", type=int, default=1024, help="Simulation shots for validation.")
+@click.option("--mode", "-m", type=click.Choice(["single", "pareto"]), default="single",
+              help="Selection mode: single (best surrogate) or pareto (multi-objective).")
 @click.option("--out", "-o", "output", type=click.Path(), default=None,
               help="Output bundle path.")
 def compile_search(
@@ -39,6 +41,7 @@ def compile_search(
     contracts: str | None,
     topk: int,
     shots: int,
+    mode: str,
     output: str | None,
 ) -> None:
     """Generate, compile, score, validate, and select best pipeline.
@@ -94,6 +97,7 @@ def compile_search(
             output=output,
             top_k=topk,
             simulation_shots=shots,
+            mode=mode,
         )
     except Exception as exc:
         console.print(f"[red]Search failed: {exc}[/red]")

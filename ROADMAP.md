@@ -27,21 +27,22 @@
 **Target: 8–16 weeks**
 
 ### Done when:
-- [ ] Observable contract (expectation preservation with CI)
-- [ ] Distribution contract (TVD with bootstrap CI)
-- [ ] Clifford/stabilizer contract (exact equivalence)
-- [ ] Contract evaluation with proper statistical rigor
-- [ ] Results stored and reported in bundle
-- [ ] `contract check` CLI returns nonzero on failure
-- [ ] Resource budgets (max shots, time, memory) enforced
-- [ ] Early stopping when pass/fail is statistically certain
-- [ ] Tests validate contract pass/fail behavior
+- [x] Observable contract (expectation preservation with CI)
+- [x] Distribution contract (TVD with bootstrap CI)
+- [x] Clifford/stabilizer contract (exact equivalence)
+- [x] Contract evaluation with proper statistical rigor
+- [x] Results stored and reported in bundle
+- [x] `contract check` CLI returns nonzero on failure
+- [x] Resource budgets (max shots, time, memory) enforced
+- [x] Early stopping when pass/fail is statistically certain
+- [x] Tests validate contract pass/fail behavior
 
 ### Key deliverables:
 - `qocc contract check` CLI command
 - `qocc.check_contract()` Python API
 - `ContractSpec` / `ContractResult` data structures
 - Sampling-based evaluation with Hoeffding and bootstrap CIs
+- Chi-square and G-test (with Williams correction) alternatives
 - Integration with adapter simulation backends
 
 ---
@@ -50,13 +51,13 @@
 **Target: 16–32 weeks**
 
 ### Done when:
-- [ ] Search generates ≥ N candidates by varying compilation params
-- [ ] Surrogate scoring ranks candidates cheaply
-- [ ] Expensive validation (simulation) runs on top-k
-- [ ] Selection returns best candidate satisfying all contracts
-- [ ] Bundle contains full candidate table + selection reasoning
-- [ ] Content-addressed caching reduces repeated runs measurably
-- [ ] Compare highlights regressions in chosen candidate over time
+- [x] Search generates ≥ N candidates by varying compilation params
+- [x] Surrogate scoring ranks candidates cheaply
+- [x] Expensive validation (simulation) runs on top-k
+- [x] Selection returns best candidate satisfying all contracts
+- [x] Bundle contains full candidate table + selection reasoning
+- [x] Content-addressed caching reduces repeated runs measurably
+- [x] Compare highlights regressions in chosen candidate over time
 
 ### Key deliverables:
 - `qocc compile search` CLI command
@@ -64,10 +65,28 @@
 - `Candidate` / `SearchSpaceConfig` data structures
 - Surrogate scorer with pluggable cost models
 - Cache index with hit/miss tracing
+- Multi-objective Pareto selection mode (`--mode pareto`)
 
 ---
 
-## Future (v0.4+)
+## v0.4 — Implemented Extensions
+
+### Done:
+- [x] Multi-objective Pareto selection
+- [x] Plugin system for custom adapters and evaluators (entry-point based)
+- [x] ASCII timeline visualization
+- [x] Nondeterminism detection (`--repeat N`)
+- [x] Bundle replay (`qocc trace replay`)
+- [x] Regression-cause analysis in `compare_bundles`
+- [x] Per-stage trace spans in adapter `compile()`
+- [x] Statevector metadata from `simulate()`
+- [x] 11 JSON schemas with full bundle validation
+- [x] Exact statevector equivalence contract
+- [x] Cost/resource budget contract
+
+---
+
+## Future (v0.5+)
 
 ### Additional adapters:
 - [ ] pytket adapter
@@ -77,9 +96,6 @@
 ### Advanced features:
 - [ ] GPU simulation backend integration
 - [ ] QEC sampling mode
-- [ ] Multi-objective Pareto selection
-- [ ] Plugin system for custom adapters and evaluators
-- [ ] Visualization / plotting in bundles
 - [ ] CI/CD integration guides and GitHub Actions templates
 - [ ] OpenTelemetry export (bridge to existing observability stacks)
 

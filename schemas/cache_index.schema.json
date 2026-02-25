@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QOCC Cache Index",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "key",
+      "hit"
+    ],
+    "properties": {
+      "key": {
+        "type": "string"
+      },
+      "hit": {
+        "type": "boolean"
+      },
+      "circuit_hash": {
+        "type": "string"
+      },
+      "pipeline_hash": {
+        "type": "string"
+      },
+      "candidate_id": {
+        "type": "string"
+      },
+      "timestamp": {
+        "type": "number"
+      }
+    },
+    "additionalProperties": true
+  }
+}

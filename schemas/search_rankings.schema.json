@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QOCC Search Rankings",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "candidate_id",
+      "surrogate_score"
+    ],
+    "properties": {
+      "candidate_id": {
+        "type": "string"
+      },
+      "surrogate_score": {
+        "type": "number"
+      },
+      "pipeline": {
+        "type": "object"
+      },
+      "metrics": {
+        "type": "object"
+      },
+      "validated": {
+        "type": "boolean"
+      },
+      "contract_results": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  }
+}

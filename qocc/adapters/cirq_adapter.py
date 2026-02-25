@@ -92,7 +92,7 @@ class CirqAdapter(BaseAdapter):
     # Compile
     # ------------------------------------------------------------------
 
-    def compile(self, circuit: CircuitHandle, pipeline: PipelineSpec) -> CompileResult:
+    def compile(self, circuit: CircuitHandle, pipeline: PipelineSpec, emitter: Any = None) -> CompileResult:
         cirq = self._cirq
         native = circuit.native_circuit
 
@@ -117,23 +117,38 @@ class CirqAdapter(BaseAdapter):
 
         pass_log: list[PassLogEntry] = []
         for i, opt in enumerate(optimizers):
+            pass_name = type(opt).__name__
+
+            # Emit a child span per pass if emitter provided
+            span_ctx = emitter.span(
+                f"pass/{pass_name}",
+                attributes={"pass_name": pass_name, "order": i},
+            ) if emitter else None
+
+            if span_ctx:
+                span_ctx.__enter__()
+
             t_pass = time.perf_counter()
             try:
                 opt(compiled)  # type: ignore[operator]
                 dt_pass = (time.perf_counter() - t_pass) * 1000.0
                 pass_log.append(PassLogEntry(
-                    pass_name=type(opt).__name__,
+                    pass_name=pass_name,
                     order=i,
                     duration_ms=dt_pass,
                 ))
+                if span_ctx:
+                    span_ctx.__exit__(None, None, None)
             except Exception as exc:
                 dt_pass = (time.perf_counter() - t_pass) * 1000.0
                 pass_log.append(PassLogEntry(
-                    pass_name=type(opt).__name__,
+                    pass_name=pass_name,
                     order=i,
                     duration_ms=dt_pass,
                     errors=[str(exc)],
                 ))
+                if span_ctx:
+                    span_ctx.__exit__(type(exc), exc, exc.__traceback__)
 
         total_elapsed = (time.perf_counter() - t_total) * 1000.0
         pass_log.append(PassLogEntry(
@@ -160,14 +175,27 @@ class CirqAdapter(BaseAdapter):
     def simulate(self, circuit: CircuitHandle, spec: SimulationSpec) -> SimulationResult:
         cirq = self._cirq
         native = circuit.native_circuit
+        import numpy as np
 
+        # ── Statevector-only mode (shots == 0) ───────────────
+        if spec.shots == 0:
+            rng = np.random.RandomState(spec.seed) if spec.seed is not None else np.random
+            sim = cirq.Simulator(seed=rng)
+            result = sim.simulate(native)
+            sv = result.final_state_vector
+            return SimulationResult(
+                counts={},
+                shots=0,
+                seed=spec.seed,
+                metadata={"statevector": sv.tolist()},
+            )
+
+        # ── Shot-based simulation ────────────────────────────
         # Add measurements if not present
         qubits = sorted(native.all_qubits())
         measured = native.copy()
         if not any(cirq.is_measurement(op) for moment in measured for op in moment):
             measured.append(cirq.measure(*qubits, key="result"))
-
-        import numpy as np
 
         rng = np.random.RandomState(spec.seed) if spec.seed is not None else np.random
         sim = cirq.DensityMatrixSimulator(seed=rng) if spec.method == "density_matrix" else cirq.Simulator(seed=rng)

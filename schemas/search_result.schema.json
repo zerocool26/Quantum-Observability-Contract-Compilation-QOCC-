@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QOCC Search Result",
+  "type": "object",
+  "required": [
+    "feasible",
+    "reason"
+  ],
+  "properties": {
+    "feasible": {
+      "type": "boolean"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "selected": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "candidate_id": {
+          "type": "string"
+        },
+        "surrogate_score": {
+          "type": "number"
+        }
+      }
+    },
+    "pareto_frontier": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "additionalProperties": true
+}

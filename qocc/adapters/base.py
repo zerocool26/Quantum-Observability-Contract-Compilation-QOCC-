@@ -123,8 +123,20 @@ class BaseAdapter(abc.ABC):
         """Export the circuit to the given format string."""
 
     @abc.abstractmethod
-    def compile(self, circuit: CircuitHandle, pipeline: PipelineSpec) -> CompileResult:
-        """Compile/transpile the circuit with the given pipeline spec."""
+    def compile(
+        self,
+        circuit: CircuitHandle,
+        pipeline: PipelineSpec,
+        emitter: Any | None = None,
+    ) -> CompileResult:
+        """Compile/transpile the circuit with the given pipeline spec.
+
+        Parameters:
+            circuit: Input circuit handle.
+            pipeline: Pipeline specification.
+            emitter: Optional ``TraceEmitter`` — when supplied, each
+                     compilation pass/stage should be wrapped in a child span.
+        """
 
     def simulate(self, circuit: CircuitHandle, spec: SimulationSpec) -> SimulationResult:
         """Run simulation. Optional in MVP — adapters may raise NotImplementedError."""

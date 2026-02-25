@@ -86,7 +86,7 @@ class QiskitAdapter(BaseAdapter):
     # Compile
     # ------------------------------------------------------------------
 
-    def compile(self, circuit: CircuitHandle, pipeline: PipelineSpec) -> CompileResult:
+    def compile(self, circuit: CircuitHandle, pipeline: PipelineSpec, emitter: Any = None) -> CompileResult:
         qk = self._qiskit
         transpile = qk["transpile"]
         qc = circuit.native_circuit
@@ -120,6 +120,19 @@ class QiskitAdapter(BaseAdapter):
                 if stage_pm is None:
                     continue
 
+                # Emit a child span per stage if emitter provided
+                span_ctx = emitter.span(
+                    f"pass/qiskit.{stage_name}",
+                    attributes={
+                        "stage": stage_name,
+                        "optimization_level": opt_level,
+                        "order": i,
+                    },
+                ) if emitter else None
+
+                if span_ctx:
+                    span_ctx.__enter__()
+
                 t_stage = time.perf_counter()
                 try:
                     intermediate = stage_pm.run(intermediate)
@@ -130,6 +143,8 @@ class QiskitAdapter(BaseAdapter):
                         order=i,
                         duration_ms=dt_stage,
                     ))
+                    if span_ctx:
+                        span_ctx.__exit__(None, None, None)
                 except Exception as exc:
                     dt_stage = (time.perf_counter() - t_stage) * 1000.0
                     pass_log.append(PassLogEntry(
@@ -139,6 +154,8 @@ class QiskitAdapter(BaseAdapter):
                         duration_ms=dt_stage,
                         errors=[str(exc)],
                     ))
+                    if span_ctx:
+                        span_ctx.__exit__(type(exc), exc, exc.__traceback__)
 
             compiled = intermediate
 
@@ -190,11 +207,24 @@ class QiskitAdapter(BaseAdapter):
     # ------------------------------------------------------------------
 
     def simulate(self, circuit: CircuitHandle, spec: SimulationSpec) -> SimulationResult:
+        from qiskit.quantum_info import Statevector  # type: ignore[import-untyped]
+
+        # ── Statevector-only mode (shots == 0) ───────────────
+        if spec.shots == 0 or spec.method == "statevector" and spec.shots == 0:
+            qc = circuit.native_circuit
+            sv = Statevector.from_instruction(qc)
+            return SimulationResult(
+                counts={},
+                shots=0,
+                seed=spec.seed,
+                metadata={"statevector": sv.data.tolist()},
+            )
+
+        # ── Shot-based simulation ────────────────────────────
         try:
             from qiskit_aer import AerSimulator  # type: ignore[import-untyped]
         except ImportError:
             # Fall back to Qiskit's built-in statevector sampler
-            from qiskit.quantum_info import Statevector  # type: ignore[import-untyped]
             qc = circuit.native_circuit
             sv = Statevector.from_instruction(qc)
             counts = sv.sample_counts(spec.shots, seed=spec.seed)

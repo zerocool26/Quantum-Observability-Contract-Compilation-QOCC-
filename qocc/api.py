@@ -128,11 +128,11 @@ def run_trace(
                 "timestamp": time.time(),
             })
             # Re-compile anyway to get the actual circuit handle
-            compile_result = adapter.compile(normalized, pipeline_spec)
+            compile_result = adapter.compile(normalized, pipeline_spec, emitter=emitter)
         else:
             span.set_attribute("cache_hit", False)
             span.add_event("cache_miss", key=cache_key[:16])
-            compile_result = adapter.compile(normalized, pipeline_spec)
+            compile_result = adapter.compile(normalized, pipeline_spec, emitter=emitter)
             # Store in cache
             cache.put(
                 cache_key,
@@ -498,6 +498,7 @@ def check_contract(
                 pass
 
     # Pre-run simulation if adapter is available and we need distribution/observable data
+    # Clamp shots to minimum of all per-contract max_shots budgets
     sim_counts_input: dict[str, int] | None = None
     sim_counts_compiled: dict[str, int] | None = None
     need_simulation = any(
@@ -506,21 +507,58 @@ def check_contract(
 
     if need_simulation and adapter and input_handle and compiled_handle:
         from qocc.adapters.base import SimulationSpec
+        import signal
+        import threading
+
+        # Determine effective shots: min(simulation_shots, per-contract max_shots)
+        effective_shots = simulation_shots
+        for s in specs:
+            if s.type in ("distribution", "observable"):
+                budget_max = s.resource_budget.get("max_shots")
+                if budget_max is not None:
+                    effective_shots = min(effective_shots, int(budget_max))
+
+        # Determine max_runtime budget (seconds) — use the minimum across contracts
+        max_runtime: float | None = None
+        for s in specs:
+            if s.type in ("distribution", "observable"):
+                rt = s.resource_budget.get("max_runtime")
+                if rt is not None:
+                    if max_runtime is None:
+                        max_runtime = float(rt)
+                    else:
+                        max_runtime = min(max_runtime, float(rt))
 
         sim_spec = SimulationSpec(
-            shots=simulation_shots,
+            shots=effective_shots,
             seed=simulation_seed,
         )
-        try:
-            sim_result_in = adapter.simulate(input_handle, sim_spec)
-            sim_counts_input = sim_result_in.counts
-        except (NotImplementedError, Exception):
-            pass
-        try:
-            sim_result_out = adapter.simulate(compiled_handle, sim_spec)
-            sim_counts_compiled = sim_result_out.counts
-        except (NotImplementedError, Exception):
-            pass
+
+        def _run_sim(handle: Any) -> dict[str, int] | None:
+            try:
+                r = adapter.simulate(handle, sim_spec)
+                return r.counts
+            except (NotImplementedError, Exception):
+                return None
+
+        if max_runtime is not None:
+            # Run simulation in a thread with timeout
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                f_in = pool.submit(_run_sim, input_handle)
+                f_out = pool.submit(_run_sim, compiled_handle)
+                try:
+                    sim_counts_input = f_in.result(timeout=max_runtime)
+                except (concurrent.futures.TimeoutError, Exception):
+                    sim_counts_input = None
+                try:
+                    sim_counts_compiled = f_out.result(timeout=max_runtime)
+                except (concurrent.futures.TimeoutError, Exception):
+                    sim_counts_compiled = None
+        else:
+            sim_counts_input = _run_sim(input_handle)
+            sim_counts_compiled = _run_sim(compiled_handle)
 
     for spec in specs:
         result: ContractResult
@@ -751,6 +789,7 @@ def search_compile(
     top_k: int = 5,
     simulation_shots: int = 1024,
     simulation_seed: int = 42,
+    mode: str = "single",
 ) -> dict[str, Any]:
     """Closed-loop compilation search (v3 entrypoint).
 
@@ -767,6 +806,8 @@ def search_compile(
         top_k: Number of top candidates to validate expensively.
         simulation_shots: Default simulation shots.
         simulation_seed: Default simulation seed.
+        mode: Selection mode — ``"single"`` (best surrogate) or
+              ``"pareto"`` (multi-objective Pareto frontier).
 
     Returns:
         SearchResult dict with selected candidate and full rankings.
@@ -863,7 +904,7 @@ def search_compile(
                             "timestamp": time.time(),
                         })
 
-                    result = adapter.compile(normalized, candidate.pipeline)
+                    result = adapter.compile(normalized, candidate.pipeline, emitter=emitter)
                     compiled = result.circuit
                     circuit_handles[candidate.candidate_id] = compiled
 
@@ -921,8 +962,8 @@ def search_compile(
             span.set_attribute("contracts_evaluated", len(contract_specs))
 
     # ── 7. Select best candidate ─────────────────────────────
-    with emitter.span("select_best") as span:
-        selection = select_best(validated, require_validated=True)
+    with emitter.span("select_best", attributes={"mode": mode}) as span:
+        selection = select_best(validated, require_validated=True, mode=mode)
         span.set_attribute("feasible", selection.feasible)
         if selection.selected:
             span.set_attribute("selected_id", selection.selected.candidate_id)
