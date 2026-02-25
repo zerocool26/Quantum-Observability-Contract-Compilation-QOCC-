@@ -13,6 +13,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 import importlib.metadata
+import re
+
+_SAFE_RUN_ID = re.compile(r"^[a-zA-Z0-9_\-]+$")
 
 
 class ArtifactStore:
@@ -60,6 +63,11 @@ class ArtifactStore:
     # ------------------------------------------------------------------
 
     def write_manifest(self, run_id: str, extra: dict[str, Any] | None = None) -> Path:
+        if not _SAFE_RUN_ID.match(run_id):
+            raise ValueError(
+                f"Invalid run_id {run_id!r}. "
+                "Must match [a-zA-Z0-9_-]+."
+            )
         manifest: dict[str, Any] = {
             "schema_version": "0.1.0",
             "created_at": datetime.now(timezone.utc).isoformat(),

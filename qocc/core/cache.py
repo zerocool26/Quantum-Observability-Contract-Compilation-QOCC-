@@ -77,6 +77,21 @@ class CompilationCache:
         self._meta_lock = threading.Lock()  # protects _key_locks dict
 
     # ------------------------------------------------------------------
+    # Context manager
+    # ------------------------------------------------------------------
+
+    def __enter__(self) -> "CompilationCache":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Release per-key locks and reset internal state."""
+        with self._meta_lock:
+            self._key_locks.clear()
+
+    # ------------------------------------------------------------------
     # Key computation
     # ------------------------------------------------------------------
 
@@ -238,7 +253,7 @@ class CompilationCache:
                         oldest = min(oldest, created)
                         newest = max(newest, created)
                     except Exception:
-                        pass
+                        logger.debug("Corrupt meta.json in %s", child, exc_info=True)
 
         return {
             "entries": entries,
@@ -264,7 +279,7 @@ class CompilationCache:
                         m = json.loads(meta_path.read_text(encoding="utf-8"))
                         last_access = m.get("last_accessed", 0)
                     except Exception:
-                        pass
+                        logger.debug("Corrupt meta.json in %s", child, exc_info=True)
                 entries.append((last_access, child))
 
         if len(entries) <= max_entries:
@@ -273,6 +288,15 @@ class CompilationCache:
         # Sort by last access (oldest first)
         entries.sort(key=lambda x: x[0])
         to_evict = entries[: len(entries) - max_entries]
+        evicted_keys: list[str] = []
         for _, path in to_evict:
+            evicted_keys.append(path.name)
             shutil.rmtree(path)
+
+        # Prune per-key locks for evicted entries
+        if evicted_keys:
+            with self._meta_lock:
+                for k in evicted_keys:
+                    self._key_locks.pop(k, None)
+
         return len(to_evict)

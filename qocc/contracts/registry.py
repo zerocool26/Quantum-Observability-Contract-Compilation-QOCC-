@@ -15,9 +15,12 @@ An evaluator callable has the signature::
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
 
 from qocc.contracts.spec import ContractResult, ContractSpec
+
+logger = logging.getLogger("qocc.contracts.registry")
 
 EvaluatorFn = Callable[..., ContractResult]
 
@@ -48,8 +51,18 @@ def list_evaluators() -> list[str]:
     return sorted(_EVALUATOR_REGISTRY)
 
 
+_ep_evaluators_discovered = False
+
+
 def _discover_entry_point_evaluators() -> None:
-    """Auto-discover evaluators from the ``qocc.evaluators`` entry-point group."""
+    """Auto-discover evaluators from the ``qocc.evaluators`` entry-point group.
+
+    Scans only once; subsequent calls are no-ops.
+    """
+    global _ep_evaluators_discovered
+    if _ep_evaluators_discovered:
+        return
+    _ep_evaluators_discovered = True
     import importlib.metadata
 
     try:
@@ -61,6 +74,6 @@ def _discover_entry_point_evaluators() -> None:
                 if ep.name not in _EVALUATOR_REGISTRY:
                     _EVALUATOR_REGISTRY[ep.name] = fn
             except Exception:
-                pass
+                logger.debug("Failed to load evaluator entry-point %s", ep.name, exc_info=True)
     except Exception:
-        pass
+        logger.debug("Entry-point discovery for qocc.evaluators failed", exc_info=True)

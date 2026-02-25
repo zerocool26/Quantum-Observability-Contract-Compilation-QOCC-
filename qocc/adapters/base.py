@@ -8,9 +8,12 @@ ingest, normalise, compile, export, hash, and measure circuits uniformly.
 from __future__ import annotations
 
 import abc
+import logging
 from typing import Any
 
 from qocc.core.circuit_handle import BackendInfo, CircuitHandle, PassLogEntry, PipelineSpec
+
+logger = logging.getLogger("qocc.adapters")
 
 
 class SimulationSpec:
@@ -197,8 +200,18 @@ def register_adapter(name: str, cls: type[BaseAdapter]) -> None:
     _REGISTRY[name] = cls
 
 
+_ep_adapters_discovered = False
+
+
 def _discover_entry_point_adapters() -> None:
-    """Auto-discover adapters registered via ``qocc.adapters`` entry-point group."""
+    """Auto-discover adapters registered via ``qocc.adapters`` entry-point group.
+
+    Scans only once; subsequent calls are no-ops.
+    """
+    global _ep_adapters_discovered
+    if _ep_adapters_discovered:
+        return
+    _ep_adapters_discovered = True
     import importlib.metadata
 
     try:
@@ -211,9 +224,9 @@ def _discover_entry_point_adapters() -> None:
                 if ep.name not in _REGISTRY:
                     _REGISTRY[ep.name] = cls
             except Exception:
-                pass  # skip broken entry points
+                logger.debug("Failed to load adapter entry-point %s", ep.name, exc_info=True)
     except Exception:
-        pass
+        logger.debug("Entry-point discovery for qocc.adapters failed", exc_info=True)
 
 
 def get_adapter(name: str) -> BaseAdapter:

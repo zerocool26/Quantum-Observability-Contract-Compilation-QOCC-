@@ -21,6 +21,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from qocc import DEFAULT_SEED
 from qocc.adapters.base import get_adapter
 from qocc.core.artifacts import ArtifactStore
 from qocc.core.cache import CompilationCache
@@ -59,10 +60,10 @@ def run_trace(
     emitter = TraceEmitter()
 
     if seeds is None:
-        seeds = {"global_seed": 42, "rng_algorithm": "MT19937", "stage_seeds": {}}
+        seeds = {"global_seed": DEFAULT_SEED, "rng_algorithm": "MT19937", "stage_seeds": {}}
 
     # Inject global_seed into pipeline parameters so adapters use it
-    _seed_value = seeds.get("global_seed", 42)
+    _seed_value = seeds.get("global_seed", DEFAULT_SEED)
 
     # Build output dir
     if output:
@@ -434,7 +435,7 @@ def check_contract(
     contract_spec: str | list[dict[str, Any]],
     adapter_name: str | None = None,
     simulation_shots: int = 1024,
-    simulation_seed: int = 42,
+    simulation_seed: int = DEFAULT_SEED,
     max_memory_mb: float | None = None,
 ) -> list[dict[str, Any]]:
     """Evaluate contracts against a bundle or circuits.
@@ -563,7 +564,7 @@ def check_contract(
             try:
                 r = adapter.simulate(handle, sim_spec)
                 return r.counts
-            except (NotImplementedError, Exception):
+            except Exception:
                 return None
 
         if max_runtime is not None:
@@ -690,7 +691,7 @@ def check_contract(
                     sv_res_out = adapter.simulate(compiled_handle, sv_spec)
                     sv_before = sv_res_in.metadata.get("statevector")
                     sv_after = sv_res_out.metadata.get("statevector")
-                except (NotImplementedError, Exception):
+                except Exception:
                     pass
 
             if sv_before is not None and sv_after is not None:
@@ -827,7 +828,7 @@ def search_compile(
     output: str | None = None,
     top_k: int = 5,
     simulation_shots: int = 1024,
-    simulation_seed: int = 42,
+    simulation_seed: int = DEFAULT_SEED,
     mode: str = "single",
 ) -> dict[str, Any]:
     """Closed-loop compilation search (v3 entrypoint).

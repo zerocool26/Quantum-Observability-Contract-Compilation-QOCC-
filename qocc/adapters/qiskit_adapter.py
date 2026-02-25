@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from qocc import DEFAULT_SEED
 from qocc.adapters.base import (
     BaseAdapter,
     CompileResult,
@@ -97,7 +98,7 @@ class QiskitAdapter(BaseAdapter):
         t_total_start = time.perf_counter()
 
         opt_level = pipeline.optimization_level
-        seed = pipeline.parameters.get("seed", 42)
+        seed = pipeline.parameters.get("seed", DEFAULT_SEED)
         extra_params = {k: v for k, v in pipeline.parameters.items() if k != "seed"}
 
         # Attempt to use staged transpilation for per-pass logging

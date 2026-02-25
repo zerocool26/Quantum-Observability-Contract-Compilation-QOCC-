@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from qocc import DEFAULT_SEED
 from qocc.adapters.base import SimulationSpec
 from qocc.search.space import Candidate
 
@@ -31,7 +32,7 @@ def validate_candidates(
         List of validated candidates.
     """
     if sim_spec is None:
-        sim_spec = SimulationSpec(shots=1024, seed=42)
+        sim_spec = SimulationSpec(shots=1024, seed=DEFAULT_SEED)
 
     validated: list[Candidate] = []
 

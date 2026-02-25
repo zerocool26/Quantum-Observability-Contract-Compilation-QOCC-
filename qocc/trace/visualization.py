@@ -28,6 +28,9 @@ def render_timeline(
     if not spans:
         return "(no spans)"
 
+    if width < 20:
+        width = 20
+
     # Parse timestamps
     parsed = []
     for s in spans:

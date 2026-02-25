@@ -24,6 +24,15 @@ class CircuitHandle:
         metadata: Arbitrary key-value metadata.
         qasm3: OpenQASM 3 representation (populated after export).
         _normalized: Whether the circuit has been canonicalized.
+        _stable_hash_cache: Cached result of ``stable_hash()``.  Computed
+            once on first call so that the hash stays immutable even if
+            mutable fields are later modified (e.g. after ``deepcopy``).
+
+    .. warning::
+
+        Do **not** mutate ``qasm3`` or ``native_circuit`` after the first
+        call to ``stable_hash()`` / ``__hash__()``; the cached value will
+        not be updated.  ``normalize_circuit()`` deep-copies first.
     """
 
     name: str
@@ -33,6 +42,7 @@ class CircuitHandle:
     metadata: dict[str, Any] = field(default_factory=dict)
     qasm3: str | None = None
     _normalized: bool = False
+    _stable_hash_cache: str | None = field(default=None, repr=False, compare=False)
 
     # ------------------------------------------------------------------
     # Serialisation helpers
@@ -57,14 +67,18 @@ class CircuitHandle:
     def stable_hash(self) -> str:
         """Produce a deterministic SHA-256 hash of the canonical representation.
 
-        If QASM3 is available use it; otherwise fall back to a
-        ``repr()``-based hash (less stable across versions).
+        The result is cached after the first call.  If QASM3 is available
+        use it; otherwise fall back to a ``repr()``-based hash (less
+        stable across versions).
         """
+        if self._stable_hash_cache is not None:
+            return self._stable_hash_cache
         if self.qasm3 is not None:
             payload = self.qasm3.encode("utf-8")
         else:
             payload = repr(self.native_circuit).encode("utf-8")
-        return hashlib.sha256(payload).hexdigest()
+        self._stable_hash_cache = hashlib.sha256(payload).hexdigest()
+        return self._stable_hash_cache
 
     def __hash__(self) -> int:  # noqa: D105
         return int(self.stable_hash()[:16], 16)

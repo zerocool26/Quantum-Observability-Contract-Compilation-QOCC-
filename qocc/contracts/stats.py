@@ -13,6 +13,8 @@ from typing import Any
 
 import numpy as np
 
+from qocc import DEFAULT_SEED
+
 
 # ======================================================================
 # Total Variation Distance
@@ -43,14 +45,14 @@ def tvd_bootstrap_ci(
     counts_b: dict[str, int],
     confidence: float = 0.95,
     n_bootstrap: int = 1000,
-    seed: int = 42,
+    seed: int = DEFAULT_SEED,
 ) -> dict[str, Any]:
     """Bootstrap confidence interval for TVD.
 
     Returns:
         Dict with ``point``, ``lower``, ``upper``, ``confidence``.
     """
-    rng = np.random.RandomState(seed)
+    rng = np.random.default_rng(seed)
 
     keys = sorted(set(counts_a) | set(counts_b))
     total_a = sum(counts_a.values())
@@ -122,10 +124,10 @@ def expectation_bootstrap_ci(
     values: list[float] | np.ndarray,
     confidence: float = 0.95,
     n_bootstrap: int = 1000,
-    seed: int = 42,
+    seed: int = DEFAULT_SEED,
 ) -> dict[str, Any]:
     """Bootstrap CI for the mean."""
-    rng = np.random.RandomState(seed)
+    rng = np.random.default_rng(seed)
     arr = np.asarray(values, dtype=float)
     n = len(arr)
     if n == 0:

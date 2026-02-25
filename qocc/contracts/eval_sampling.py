@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
+from qocc import DEFAULT_SEED
 from qocc.contracts.spec import ContractResult, ContractSpec
 from qocc.contracts.stats import (
     chi_square_test,
@@ -263,7 +264,7 @@ def _evaluate_distribution_once(
     """Single-shot distribution contract evaluation."""
     tolerance = spec.tolerances.get("tvd", 0.1)
     confidence_level = spec.confidence.get("level", 0.95)
-    seed = int(spec.resource_budget.get("seed", 42))
+    seed = int(spec.resource_budget.get("seed", DEFAULT_SEED))
     n_bootstrap = int(spec.resource_budget.get("n_bootstrap", 1000))
 
     # Choose test method

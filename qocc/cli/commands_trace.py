@@ -9,6 +9,8 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from qocc import DEFAULT_SEED
+
 console = Console()
 
 
@@ -26,7 +28,7 @@ def trace() -> None:
               help="Pipeline specification JSON file.")
 @click.option("--out", "-o", "output", type=click.Path(), default=None,
               help="Output bundle path (zip or directory).")
-@click.option("--seed", type=int, default=42, help="Global seed.")
+@click.option("--seed", type=int, default=DEFAULT_SEED, help="Global seed.")
 @click.option("--repeat", "-n", type=int, default=1,
               help="Repeat compilation N times for nondeterminism detection (>=2).")
 def trace_run(

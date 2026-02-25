@@ -20,6 +20,8 @@ from typing import Any
 
 from qocc.core.circuit_handle import PipelineSpec
 
+from qocc import DEFAULT_SEED
+
 
 @dataclass
 class SearchSpaceConfig:
@@ -39,7 +41,7 @@ class SearchSpaceConfig:
 
     adapter: str = "qiskit"
     optimization_levels: list[int] = field(default_factory=lambda: [0, 1, 2, 3])
-    seeds: list[int] = field(default_factory=lambda: [42])
+    seeds: list[int] = field(default_factory=lambda: [DEFAULT_SEED])
     routing_methods: list[str] = field(default_factory=lambda: ["stochastic", "sabre"])
     extra_params: dict[str, list[Any]] = field(default_factory=dict)
     strategy: str = "grid"
@@ -65,7 +67,7 @@ class SearchSpaceConfig:
         return cls(
             adapter=d.get("adapter", "qiskit"),
             optimization_levels=d.get("optimization_levels", [0, 1, 2, 3]),
-            seeds=d.get("seeds", [42]),
+            seeds=d.get("seeds", [DEFAULT_SEED]),
             routing_methods=d.get("routing_methods", ["stochastic", "sabre"]),
             extra_params=d.get("extra_params", {}),
             strategy=d.get("strategy", "grid"),
@@ -148,7 +150,7 @@ def _generate_grid(config: SearchSpaceConfig) -> list[Candidate]:
     for combo in itertools.product(*values):
         params = dict(zip(keys, combo))
         opt_level = params.pop("optimization_level")
-        seed = params.pop("seed", 42)
+        seed = params.pop("seed", DEFAULT_SEED)
         params["seed"] = seed
 
         pipeline = PipelineSpec(
@@ -168,7 +170,7 @@ def _generate_random(config: SearchSpaceConfig) -> list[Candidate]:
     """Random sampling from the parameter space."""
     import numpy as np
 
-    rng = np.random.RandomState(config.seeds[0] if config.seeds else 42)
+    rng = np.random.default_rng(config.seeds[0] if config.seeds else DEFAULT_SEED)
     candidates: list[Candidate] = []
     seen: set[str] = set()
 
@@ -190,10 +192,10 @@ def _generate_random(config: SearchSpaceConfig) -> list[Candidate]:
         params: dict[str, Any] = {}
         for k in keys:
             vals = axes[k]
-            params[k] = vals[rng.randint(0, len(vals))]
+            params[k] = vals[rng.integers(0, len(vals))]
 
         opt_level = params.pop("optimization_level")
-        seed = params.pop("seed", 42)
+        seed = params.pop("seed", DEFAULT_SEED)
         params["seed"] = seed
 
         pipeline = PipelineSpec(
@@ -321,7 +323,7 @@ class BayesianSearchOptimizer:
         Y_norm = (Y_obs - y_mean) / y_std
 
         # Generate a large pool of random candidates
-        rng = np.random.RandomState(len(self._observed_X))
+        rng = np.random.default_rng(len(self._observed_X))
         pool_size = max(batch_size * 20, 200)
         pool_vecs: list[list[float]] = []
         for _ in range(pool_size):
@@ -357,7 +359,7 @@ class BayesianSearchOptimizer:
         for idx in top_idx:
             params = self._decode(pool_vecs[idx])
             opt_level = params.pop("optimization_level", 1)
-            seed = params.pop("seed", 42)
+            seed = params.pop("seed", DEFAULT_SEED)
             params["seed"] = seed
             pipeline = PipelineSpec(
                 adapter=self.config.adapter,

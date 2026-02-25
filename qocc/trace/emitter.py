@@ -107,9 +107,11 @@ class TraceEmitter:
     # ------------------------------------------------------------------
 
     def finished_spans(self) -> list[Span]:
-        """Return all finished spans in order."""
-        return list(self._spans)
+        """Return all finished spans in order (thread-safe)."""
+        with self._lock:
+            return list(self._spans)
 
     def to_dicts(self) -> list[dict[str, Any]]:
-        """Serialised spans ready for ``trace.jsonl``."""
-        return [s.to_dict() for s in self._spans]
+        """Serialised spans ready for ``trace.jsonl`` (thread-safe)."""
+        with self._lock:
+            return [s.to_dict() for s in self._spans]

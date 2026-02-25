@@ -179,7 +179,7 @@ class CirqAdapter(BaseAdapter):
 
         # ── Statevector-only mode (shots == 0) ───────────────
         if spec.shots == 0:
-            rng = np.random.RandomState(spec.seed) if spec.seed is not None else np.random
+            rng = np.random.default_rng(spec.seed) if spec.seed is not None else np.random.default_rng()
             sim = cirq.Simulator(seed=rng)
             result = sim.simulate(native)
             sv = result.final_state_vector
@@ -197,7 +197,7 @@ class CirqAdapter(BaseAdapter):
         if not any(cirq.is_measurement(op) for moment in measured for op in moment):
             measured.append(cirq.measure(*qubits, key="result"))
 
-        rng = np.random.RandomState(spec.seed) if spec.seed is not None else np.random
+        rng = np.random.default_rng(spec.seed) if spec.seed is not None else np.random.default_rng()
         sim = cirq.DensityMatrixSimulator(seed=rng) if spec.method == "density_matrix" else cirq.Simulator(seed=rng)
 
         result = sim.run(measured, repetitions=spec.shots)

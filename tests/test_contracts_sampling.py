@@ -58,7 +58,7 @@ class TestExpectationCI:
         assert ci["n"] == 1000
 
     def test_bootstrap_ci(self):
-        rng = np.random.RandomState(42)
+        rng = np.random.default_rng(42)
         values = rng.normal(0.5, 0.1, size=200).tolist()
         ci = expectation_bootstrap_ci(values, confidence=0.95, seed=42)
         assert abs(ci["mean"] - 0.5) < 0.05
