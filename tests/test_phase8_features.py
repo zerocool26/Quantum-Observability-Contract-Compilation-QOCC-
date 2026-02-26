@@ -321,6 +321,59 @@ class TestReplayModule:
         result = replay_bundle(str(bundle))
         assert "error" in result.diff
 
+    def test_replay_unknown_compiled_hash_is_explicit(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Missing selected.qasm should be reported as unknown and fail-closed."""
+        from qocc.core.circuit_handle import CircuitHandle
+        from qocc.core.replay import replay_bundle
+
+        bundle = tmp_path / "bundle"
+        (bundle / "circuits").mkdir(parents=True)
+        (bundle / "manifest.json").write_text(
+            json.dumps({"schema_version": "0.1.0", "run_id": "r1", "adapter": "fake"}),
+            encoding="utf-8",
+        )
+        (bundle / "seeds.json").write_text(
+            json.dumps({"global_seed": 42, "rng_algorithm": "PCG64", "stage_seeds": {}}),
+            encoding="utf-8",
+        )
+        (bundle / "metrics.json").write_text(
+            json.dumps({"compiled": {"depth": 1}}),
+            encoding="utf-8",
+        )
+        input_qasm = "OPENQASM 3.0; qubit[1] q;"
+        (bundle / "circuits" / "input.qasm").write_text(input_qasm, encoding="utf-8")
+
+        class _FakeAdapter:
+            def ingest(self, source: str) -> CircuitHandle:
+                text = Path(source).read_text(encoding="utf-8") if Path(source).exists() else str(source)
+                return CircuitHandle(
+                    name="x",
+                    num_qubits=1,
+                    native_circuit={"qasm": text},
+                    source_format="qasm3",
+                    qasm3=text,
+                )
+
+        expected_input_hash = _FakeAdapter().ingest(str(bundle / "circuits" / "input.qasm")).stable_hash()
+
+        def _fake_run_trace(**_: object) -> dict[str, object]:
+            return {
+                "bundle_zip": str(tmp_path / "replay.zip"),
+                "input_hash": expected_input_hash,
+                "compiled_hash": "compiled-replay-hash",
+                "metrics_after": {"depth": 1},
+            }
+
+        monkeypatch.setattr("qocc.adapters.base.get_adapter", lambda _: _FakeAdapter())
+        monkeypatch.setattr("qocc.api.run_trace", _fake_run_trace)
+
+        result = replay_bundle(str(bundle))
+        assert result.input_hash_status == "matched"
+        assert result.compiled_hash_status == "unknown"
+        assert result.compiled_hash_match is False
+        assert result.bit_exact is False
+        assert result.diff.get("_verification", {}).get("compiled_hash") == "unknown"
+
 
 # ======================================================================
 # 10. Topology module

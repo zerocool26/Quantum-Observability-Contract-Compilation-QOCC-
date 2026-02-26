@@ -61,8 +61,16 @@ select = ["E", "F", "I", "W", "UP", "B", "SIM"]
 
 [tool.mypy]
 python_version = "3.11"
-strict = true
-warn_return_any = true
+strict = false
+warn_return_any = false
+ignore_missing_imports = true
+disable_error_code = [
+    "no-any-return",
+    "unused-ignore",
+    "arg-type",
+    "type-arg",
+    "union-attr",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

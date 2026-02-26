@@ -149,3 +149,113 @@ def test_search_space_config_roundtrip():
     assert config2.adapter == "cirq"
     assert config2.optimization_levels == [0, 1, 2]
     assert config2.seeds == [42, 100]
+
+
+def test_search_compile_distribution_contract_uses_candidate_simulation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """search_compile should evaluate distribution contracts from real candidate simulations."""
+    from qocc.adapters.base import (
+        BaseAdapter,
+        CompileResult,
+        MetricsSnapshot,
+        SimulationResult,
+    )
+    from qocc.api import search_compile
+    from qocc.core.circuit_handle import BackendInfo, CircuitHandle, PipelineSpec
+
+    class _FakeAdapter(BaseAdapter):
+        def name(self) -> str:
+            return "fake"
+
+        def ingest(self, source: str | object) -> CircuitHandle:
+            text = str(source)
+            if text.startswith("compiled-"):
+                qasm = text
+            elif text == "normalized":
+                qasm = "normalized"
+            else:
+                qasm = "input"
+            return CircuitHandle(
+                name=qasm,
+                num_qubits=2,
+                native_circuit={"qasm": qasm},
+                source_format="qasm3",
+                qasm3=qasm,
+            )
+
+        def normalize(self, circuit: CircuitHandle) -> CircuitHandle:
+            return CircuitHandle(
+                name="normalized",
+                num_qubits=2,
+                native_circuit={"qasm": "normalized"},
+                source_format="qasm3",
+                qasm3="normalized",
+            )
+
+        def export(self, circuit: CircuitHandle, fmt: str = "qasm3") -> str:
+            return circuit.qasm3 or ""
+
+        def compile(
+            self,
+            circuit: CircuitHandle,
+            pipeline: PipelineSpec,
+            emitter: object | None = None,
+        ) -> CompileResult:
+            seed = pipeline.parameters.get("seed", 0)
+            qasm = f"compiled-{seed}"
+            handle = CircuitHandle(
+                name=qasm,
+                num_qubits=2,
+                native_circuit={"qasm": qasm},
+                source_format="qasm3",
+                qasm3=qasm,
+            )
+            return CompileResult(circuit=handle, pass_log=[])
+
+        def simulate(self, circuit: CircuitHandle, spec: object) -> SimulationResult:
+            shots = getattr(spec, "shots", 1024)
+            seed = getattr(spec, "seed", None)
+            if circuit.qasm3 == "normalized":
+                counts = {"00": shots}
+            else:
+                counts = {"11": shots}
+            return SimulationResult(
+                counts=counts,
+                shots=shots,
+                seed=seed,
+                metadata={"statevector": [1.0, 0.0, 0.0, 0.0]},
+            )
+
+        def get_metrics(self, circuit: CircuitHandle) -> MetricsSnapshot:
+            return MetricsSnapshot({"depth": 1, "gates_2q": 0, "duration": 0.0, "proxy_error": 0.0})
+
+        def hash(self, circuit: CircuitHandle) -> str:
+            return circuit.stable_hash()
+
+        def describe_backend(self) -> BackendInfo:
+            return BackendInfo(name="fake", version="candidate-contract-test")
+
+    monkeypatch.setattr("qocc.api.get_adapter", lambda _: _FakeAdapter())
+
+    result = search_compile(
+        adapter_name="fake",
+        input_source="OPENQASM 3.0;",
+        search_config={
+            "adapter": "fake",
+            "optimization_levels": [1],
+            "seeds": [7],
+            "routing_methods": ["fake"],
+        },
+        contracts=[
+            {"name": "dist", "type": "distribution", "tolerances": {"tvd": 0.1}},
+        ],
+        output=str(tmp_path / "search.zip"),
+        top_k=1,
+        simulation_shots=32,
+    )
+
+    contract = result["top_rankings"][0]["contract_results"][0]
+    assert contract["passed"] is False
+    assert "tvd_point" in contract["details"]
+    assert "error" not in contract["details"]

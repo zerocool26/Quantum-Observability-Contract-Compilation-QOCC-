@@ -33,6 +33,8 @@ class ReplayResult:
     input_hash_match: bool = False
     compiled_hash_match: bool = False
     metrics_match: bool = False
+    input_hash_status: str = "unknown"
+    compiled_hash_status: str = "unknown"
     original_hash: str = ""
     replay_hash: str = ""
     diff: dict[str, Any] = field(default_factory=dict)
@@ -44,6 +46,8 @@ class ReplayResult:
             "input_hash_match": self.input_hash_match,
             "compiled_hash_match": self.compiled_hash_match,
             "metrics_match": self.metrics_match,
+            "input_hash_status": self.input_hash_status,
+            "compiled_hash_status": self.compiled_hash_status,
             "original_hash": self.original_hash,
             "replay_hash": self.replay_hash,
             "diff": self.diff,
@@ -144,8 +148,16 @@ def replay_bundle(
         except Exception:
             pass
 
-    input_hash_match = orig_input_hash == replay_input_hash if orig_input_hash else True
-    compiled_hash_match = orig_compiled_hash == replay_compiled_hash if orig_compiled_hash else False
+    input_hash_status = "unknown"
+    compiled_hash_status = "unknown"
+    if orig_input_hash:
+        input_hash_status = "matched" if orig_input_hash == replay_input_hash else "mismatched"
+    if orig_compiled_hash:
+        compiled_hash_status = "matched" if orig_compiled_hash == replay_compiled_hash else "mismatched"
+
+    # Fail closed when original hashes are unavailable.
+    input_hash_match = input_hash_status == "matched"
+    compiled_hash_match = compiled_hash_status == "matched"
 
     # Metrics comparison
     metrics_diff: dict[str, Any] = {}
@@ -159,12 +171,19 @@ def replay_bundle(
 
     metrics_match = len(metrics_diff) == 0
 
+    if input_hash_status == "unknown":
+        metrics_diff.setdefault("_verification", {})["input_hash"] = "unknown"
+    if compiled_hash_status == "unknown":
+        metrics_diff.setdefault("_verification", {})["compiled_hash"] = "unknown"
+
     return ReplayResult(
         original_run_id=original_run_id,
         replay_bundle=result.get("bundle_zip"),
         input_hash_match=input_hash_match,
         compiled_hash_match=compiled_hash_match,
         metrics_match=metrics_match,
+        input_hash_status=input_hash_status,
+        compiled_hash_status=compiled_hash_status,
         original_hash=orig_compiled_hash,
         replay_hash=replay_compiled_hash,
         diff=metrics_diff if metrics_diff else {},

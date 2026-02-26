@@ -5,7 +5,7 @@ Thank you for your interest in contributing to QOCC! This document provides guid
 ## Getting Started
 
 ### Prerequisites
-- Python 3.10+
+- Python 3.11+
 - Git
 
 ### Development Setup

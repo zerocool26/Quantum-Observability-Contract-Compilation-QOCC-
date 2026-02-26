@@ -47,7 +47,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: mypy
-        run: mypy qocc/ --ignore-missing-imports --no-strict
+        run: mypy qocc/
 
   test:
     runs-on: ${{ matrix.os }}

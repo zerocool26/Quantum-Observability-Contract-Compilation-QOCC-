@@ -105,6 +105,8 @@ class TestDefaultSeedUsage:
         # Should not have hardcoded 'seed: int = 42'
         assert "simulation_seed: int = 42" not in source
         assert "DEFAULT_SEED" in source
+        assert '"MT19937"' not in source
+        assert "DEFAULT_RNG_ALGORITHM" in source
 
     def test_stats_uses_default_seed(self) -> None:
         import inspect
@@ -121,6 +123,8 @@ class TestDefaultSeedUsage:
         source = inspect.getsource(ct)
         assert "default=42" not in source
         assert "DEFAULT_SEED" in source
+        assert '"MT19937"' not in source
+        assert "DEFAULT_RNG_ALGORITHM" in source
 
     def test_search_space_uses_default_seed(self) -> None:
         import inspect

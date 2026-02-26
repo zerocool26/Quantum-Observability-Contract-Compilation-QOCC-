@@ -360,13 +360,13 @@ class TestRngAlgorithm:
     """Verify seeds include rng_algorithm in CLI and API."""
 
     def test_trace_run_cli_seeds_include_rng(self):
-        """The trace run CLI hard-codes 'MT19937' as rng_algorithm."""
+        """The trace run CLI should source rng_algorithm from shared constants."""
         # Read the source file directly to verify the seeds dict
         from pathlib import Path
         src_file = Path(__file__).resolve().parent.parent / "qocc" / "cli" / "commands_trace.py"
         src = src_file.read_text(encoding="utf-8")
         assert "rng_algorithm" in src
-        assert "MT19937" in src
+        assert "DEFAULT_RNG_ALGORITHM" in src
 
     def test_artifact_store_seeds_roundtrip(self, tmp_path: Path):
         """Seeds written and read back should preserve rng_algorithm."""

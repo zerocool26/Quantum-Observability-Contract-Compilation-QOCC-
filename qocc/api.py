@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from qocc import DEFAULT_SEED
+from qocc import DEFAULT_RNG_ALGORITHM, DEFAULT_SEED
 from qocc.adapters.base import get_adapter
 from qocc.core.artifacts import ArtifactStore
 from qocc.core.cache import CompilationCache
@@ -60,7 +60,11 @@ def run_trace(
     emitter = TraceEmitter()
 
     if seeds is None:
-        seeds = {"global_seed": DEFAULT_SEED, "rng_algorithm": "MT19937", "stage_seeds": {}}
+        seeds = {
+            "global_seed": DEFAULT_SEED,
+            "rng_algorithm": DEFAULT_RNG_ALGORITHM,
+            "stage_seeds": {},
+        }
 
     # Inject global_seed into pipeline parameters so adapters use it
     _seed_value = seeds.get("global_seed", DEFAULT_SEED)
@@ -1024,6 +1028,25 @@ def search_compile(
     # ── 6. Evaluate contracts on validated candidates ────────
     if contract_specs:
         with emitter.span("evaluate_contracts") as span:
+            from qocc.contracts.eval_sampling import (
+                _counts_to_observable_values,
+                evaluate_distribution_contract,
+                evaluate_observable_contract,
+            )
+            from qocc.contracts.eval_exact import evaluate_exact_equivalence
+            from qocc.contracts.eval_clifford import evaluate_clifford_contract
+            from qocc.contracts.spec import ContractResult
+            from qocc.contracts.registry import get_evaluator
+
+            baseline_counts: dict[str, int] | None = None
+            needs_sampling = any(s.type in ("distribution", "observable", "clifford") for s in contract_specs)
+            if needs_sampling:
+                try:
+                    baseline_sim = adapter.simulate(normalized, sim_spec)
+                    baseline_counts = baseline_sim.counts
+                except Exception as exc:
+                    logger.warning("Baseline simulation failed for search contracts: %s", exc)
+
             for candidate in validated:
                 if not candidate.validated:
                     continue
@@ -1031,12 +1054,111 @@ def search_compile(
                 if not compiled_handle:
                     continue
 
-                # Run contract check with the compiled metrics
-                candidate_contracts = check_contract(
-                    {"metrics": {"compiled": candidate.metrics}, "manifest": {}, "_root": None},
-                    [s.to_dict() for s in contract_specs],
-                    adapter_name=adapter_name,
-                )
+                candidate_counts = candidate.validation_result.get("counts")
+                candidate_contracts: list[dict[str, Any]] = []
+
+                for spec in contract_specs:
+                    if spec.evaluator not in ("auto", ""):
+                        custom_fn = get_evaluator(spec.evaluator)
+                        if custom_fn is not None:
+                            try:
+                                custom_result = custom_fn(
+                                    spec,
+                                    counts_before=baseline_counts,
+                                    counts_after=candidate_counts,
+                                    input_handle=normalized,
+                                    compiled_handle=compiled_handle,
+                                    adapter=adapter,
+                                    bundle={"metrics": {"compiled": candidate.metrics}},
+                                )
+                                candidate_contracts.append(custom_result.to_dict())
+                                continue
+                            except Exception as exc:
+                                candidate_contracts.append(
+                                    ContractResult(
+                                        name=spec.name,
+                                        passed=False,
+                                        details={
+                                            "error": f"Custom evaluator {spec.evaluator!r} failed: {exc}"
+                                        },
+                                    ).to_dict()
+                                )
+                                continue
+
+                    if spec.type == "distribution":
+                        if baseline_counts and candidate_counts:
+                            contract_result = evaluate_distribution_contract(
+                                spec,
+                                baseline_counts,
+                                candidate_counts,
+                            )
+                        else:
+                            contract_result = ContractResult(
+                                name=spec.name,
+                                passed=False,
+                                details={
+                                    "type": "distribution",
+                                    "error": "No simulation data available for candidate contract evaluation.",
+                                },
+                            )
+                    elif spec.type == "observable":
+                        if baseline_counts and candidate_counts:
+                            contract_result = evaluate_observable_contract(
+                                spec,
+                                _counts_to_observable_values(baseline_counts),
+                                _counts_to_observable_values(candidate_counts),
+                            )
+                        else:
+                            contract_result = ContractResult(
+                                name=spec.name,
+                                passed=False,
+                                details={
+                                    "type": "observable",
+                                    "error": "No simulation data available for candidate contract evaluation.",
+                                },
+                            )
+                    elif spec.type == "clifford":
+                        contract_result = evaluate_clifford_contract(
+                            spec,
+                            normalized,
+                            compiled_handle,
+                            counts_before=baseline_counts,
+                            counts_after=candidate_counts,
+                        )
+                    elif spec.type == "exact":
+                        try:
+                            sv_spec = SimulationSpec(shots=0, seed=simulation_seed, method="statevector")
+                            sv_before = adapter.simulate(normalized, sv_spec).metadata.get("statevector")
+                            sv_after = adapter.simulate(compiled_handle, sv_spec).metadata.get("statevector")
+                        except Exception:
+                            sv_before = None
+                            sv_after = None
+
+                        if sv_before is not None and sv_after is not None:
+                            contract_result = evaluate_exact_equivalence(spec, sv_before, sv_after)
+                        else:
+                            contract_result = ContractResult(
+                                name=spec.name,
+                                passed=False,
+                                details={
+                                    "type": "exact",
+                                    "error": "Statevector simulation not available for candidate.",
+                                },
+                            )
+                    elif spec.type == "cost":
+                        contract_result = _evaluate_cost_contract(spec, candidate.metrics)
+                    else:
+                        contract_result = ContractResult(
+                            name=spec.name,
+                            passed=False,
+                            details={
+                                "type": spec.type,
+                                "error": f"Unknown contract type: {spec.type!r}",
+                            },
+                        )
+
+                    candidate_contracts.append(contract_result.to_dict())
+
                 candidate.contract_results = candidate_contracts
 
             span.set_attribute("contracts_evaluated", len(contract_specs))

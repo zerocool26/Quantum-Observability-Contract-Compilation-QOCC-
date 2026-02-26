@@ -9,7 +9,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from qocc import DEFAULT_SEED
+from qocc import DEFAULT_RNG_ALGORITHM, DEFAULT_SEED
 
 console = Console()
 
@@ -42,7 +42,11 @@ def trace_run(
     """Run an instrumented compilation trace and produce a Trace Bundle."""
     from qocc.api import run_trace
 
-    seeds = {"global_seed": seed, "rng_algorithm": "MT19937", "stage_seeds": {}}
+    seeds = {
+        "global_seed": seed,
+        "rng_algorithm": DEFAULT_RNG_ALGORITHM,
+        "stage_seeds": {},
+    }
 
     console.print(f"[bold blue]QOCC Trace Run[/bold blue]")
     console.print(f"  Adapter: {adapter}")
