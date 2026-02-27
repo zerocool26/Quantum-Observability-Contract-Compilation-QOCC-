@@ -23,6 +23,7 @@ class ContractType(str, Enum):
     CLIFFORD = "clifford"
     EXACT = "exact"
     COST = "cost"
+    QEC = "qec"
 
     @classmethod
     def is_valid(cls, value: str) -> bool:
@@ -50,8 +51,8 @@ class ContractSpec:
     name: str
     type: str  # validated against ContractType
     spec: dict[str, Any] = field(default_factory=dict)
-    tolerances: dict[str, float] = field(default_factory=dict)
-    confidence: dict[str, float] = field(default_factory=dict)
+    tolerances: dict[str, Any] = field(default_factory=dict)
+    confidence: dict[str, Any] = field(default_factory=dict)
     resource_budget: dict[str, Any] = field(default_factory=dict)
     evaluator: str = "auto"
 

@@ -10,6 +10,7 @@ __all__ = [
     "canonicalize_qasm3",
     "hash_dict",
     "hash_string",
+    "RegressionDatabase",
     "replay_bundle",
 ]
 
@@ -18,4 +19,5 @@ from qocc.core.cache import CompilationCache
 from qocc.core.canonicalize import canonicalize_qasm3
 from qocc.core.circuit_handle import CircuitHandle, PipelineSpec
 from qocc.core.hashing import hash_dict, hash_string
+from qocc.core.regression_db import RegressionDatabase
 from qocc.core.replay import replay_bundle

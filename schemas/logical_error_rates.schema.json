@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QOCC Logical Error Rates",
+  "type": "object",
+  "properties": {
+    "logical_error_rate": {
+      "type": "number"
+    },
+    "shots": {
+      "type": "integer"
+    },
+    "logical_errors": {
+      "type": "integer"
+    }
+  },
+  "additionalProperties": true
+}

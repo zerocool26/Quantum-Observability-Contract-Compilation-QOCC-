@@ -15,6 +15,7 @@ import click
 from qocc.cli.commands_trace import trace
 from qocc.cli.commands_compare import compare_legacy
 from qocc.cli.commands_contract import contract
+from qocc.cli.commands_db import db_group
 from qocc.cli.commands_search import compile_group
 from qocc.cli.commands_validate import validate
 
@@ -30,6 +31,7 @@ cli.add_command(compare_legacy, "compare")  # deprecated alias
 cli.add_command(contract)
 cli.add_command(compile_group)
 cli.add_command(validate)
+cli.add_command(db_group)
 
 
 if __name__ == "__main__":

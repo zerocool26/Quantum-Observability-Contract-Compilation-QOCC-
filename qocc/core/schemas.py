@@ -90,7 +90,7 @@ CONTRACTS_SCHEMA: dict[str, Any] = {
             "name": {"type": "string"},
             "type": {
                 "type": "string",
-                "enum": ["observable", "distribution", "clifford", "exact", "cost"],
+                "enum": ["observable", "distribution", "clifford", "exact", "cost", "qec"],
             },
             "spec": {"type": "object"},
             "tolerances": {"type": "object"},
@@ -226,6 +226,105 @@ SEARCH_RESULT_SCHEMA: dict[str, Any] = {
     "additionalProperties": True,
 }
 
+DEM_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "QOCC Detector Error Model",
+    "type": "object",
+    "required": ["dem"],
+    "properties": {
+        "dem": {"type": "string"},
+    },
+    "additionalProperties": True,
+}
+
+LOGICAL_ERROR_RATES_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "QOCC Logical Error Rates",
+    "type": "object",
+    "properties": {
+        "logical_error_rate": {"type": "number"},
+        "shots": {"type": "integer"},
+        "logical_errors": {"type": "integer"},
+    },
+    "additionalProperties": True,
+}
+
+DECODER_STATS_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "QOCC Decoder Stats",
+    "type": "object",
+    "properties": {
+        "decoder_rounds": {"type": "integer"},
+        "matching_graph_edges": {"type": ["integer", "null"]},
+        "matching_graph_nodes": {"type": ["integer", "null"]},
+        "logical_errors": {"type": "integer"},
+        "code_distance": {"type": ["integer", "number"]},
+        "mean_syndrome_weight": {"type": ["number", "null"]},
+        "syndrome_weight_distribution": {
+            "type": "object",
+            "additionalProperties": {"type": ["integer", "number"]},
+        },
+    },
+    "additionalProperties": True,
+}
+
+NOISE_MODEL_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "QOCC Noise Model",
+    "type": "object",
+    "properties": {
+        "single_qubit_error": {
+            "oneOf": [
+                {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                {
+                    "type": "object",
+                    "additionalProperties": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                },
+            ]
+        },
+        "two_qubit_error": {
+            "oneOf": [
+                {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                {
+                    "type": "object",
+                    "additionalProperties": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                },
+            ]
+        },
+        "readout_error": {
+            "oneOf": [
+                {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                {
+                    "type": "object",
+                    "additionalProperties": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                },
+            ]
+        },
+        "t1": {
+            "oneOf": [
+                {"type": "number", "exclusiveMinimum": 0.0},
+                {
+                    "type": "object",
+                    "additionalProperties": {"type": "number", "exclusiveMinimum": 0.0},
+                },
+                {"type": "null"},
+            ]
+        },
+        "t2": {
+            "oneOf": [
+                {"type": "number", "exclusiveMinimum": 0.0},
+                {
+                    "type": "object",
+                    "additionalProperties": {"type": "number", "exclusiveMinimum": 0.0},
+                },
+                {"type": "null"},
+            ]
+        },
+    },
+    "required": ["single_qubit_error", "two_qubit_error", "readout_error"],
+    "additionalProperties": True,
+}
+
 # Registry for programmatic access
 SCHEMAS: dict[str, dict[str, Any]] = {
     "manifest": MANIFEST_SCHEMA,
@@ -239,6 +338,10 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "nondeterminism": NONDETERMINISM_SCHEMA,
     "search_rankings": SEARCH_RANKINGS_SCHEMA,
     "search_result": SEARCH_RESULT_SCHEMA,
+    "dem": DEM_SCHEMA,
+    "logical_error_rates": LOGICAL_ERROR_RATES_SCHEMA,
+    "decoder_stats": DECODER_STATS_SCHEMA,
+    "noise_model": NOISE_MODEL_SCHEMA,
 }
 
 
@@ -304,6 +407,9 @@ def validate_bundle(bundle_dir: str | Path) -> dict[str, list[str]]:
         "nondeterminism.json": "nondeterminism",
         "search_rankings.json": "search_rankings",
         "search_result.json": "search_result",
+        "dem.json": "dem",
+        "logical_error_rates.json": "logical_error_rates",
+        "decoder_stats.json": "decoder_stats",
     }
     for fname, schema_name in optional_maps.items():
         fp = root / fname

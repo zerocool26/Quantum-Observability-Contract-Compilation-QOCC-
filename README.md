@@ -30,6 +30,9 @@ qocc trace compare bundleA.zip bundleB.zip --report reports/
 # Check contracts
 qocc contract check --bundle bundle.zip --contracts examples/contracts_examples.json
 
+# Check contracts from DSL file
+qocc contract check --bundle bundle.zip --contracts examples/contracts.qocc
+
 # Compilation search
 qocc compile search --adapter qiskit --input examples/ghz.qasm --topk 5 --out search.zip
 
@@ -42,11 +45,34 @@ qocc compile search --adapter qiskit --input examples/ghz.qasm --strategy random
 # Bayesian adaptive search (UCB acquisition)
 qocc compile search --adapter qiskit --input examples/ghz.qasm --strategy bayesian --out search.zip
 
+# Noise-aware surrogate scoring (provider-agnostic noise model JSON)
+qocc compile search --adapter qiskit --input examples/ghz.qasm --noise-model examples/noise_model.json --out search.zip
+
 # Detect nondeterminism (compile 5 times)
 qocc trace run --adapter qiskit --input examples/ghz.qasm --repeat 5 --out nd.zip
 
 # Replay a bundle
 qocc trace replay bundle.zip --out replayed.zip
+
+# Generate interactive HTML report from an existing bundle
+qocc trace html --bundle bundle.zip --out report.html
+
+# Generate HTML report directly during trace run
+qocc trace run --adapter qiskit --input examples/ghz.qasm --html
+
+# Optional notebook visualization dependencies
+pip install -e ".[jupyter]"
+
+# Run trace and auto-ingest into regression DB
+qocc trace run --adapter qiskit --input examples/ghz.qasm --db
+
+# Regression DB workflows
+qocc db ingest bundle.zip
+qocc db query --adapter qiskit --since 2026-01-01
+qocc db tag bundle.zip --tag baseline
+
+# Notebook helpers (inside Python/Jupyter)
+python -c "import qocc; print(qocc.show_bundle('bundle.zip'))"
 ```
 
 ## Architecture
@@ -70,6 +96,53 @@ Every stage emits structured spans with per-pass granularity. The resulting Trac
 | `clifford` | Stabilizer tableau | Exact Clifford equivalence (falls back to distribution for non-Clifford) |
 | `exact` | Statevector fidelity | Exact statevector equivalence |
 | `cost` | Resource budget | Depth, 2Q gates, total gates, duration, proxy error within limits |
+
+### Contract DSL
+
+`qocc contract check --contracts` supports both JSON and `.qocc` DSL files.
+
+```text
+contract depth_budget:
+    type: cost
+    assert: depth <= 50
+    assert: two_qubit_gates <= 100
+
+contract tvd_check:
+    type: distribution
+    tolerance: tvd <= 0.05
+    confidence: 0.99
+    shots: 4096 .. 65536
+
+contract parametric_budget:
+    type: cost
+    assert: depth <= input_depth - 2
+    assert: proxy_error_score <= 1 - error_budget
+```
+
+Parametric values are resolved at evaluation time from bundle metrics and
+contract fields (for example `input_depth`, `compiled_depth`, `baseline_tvd`,
+and symbolic references like `error_budget`).
+
+### Contract Composition
+
+Composition is supported via JSON envelopes:
+
+```json
+{
+    "name": "combined",
+    "op": "all_of",
+    "contracts": [
+        {"name": "depth", "type": "cost", "resource_budget": {"max_depth": 50}},
+        {"name": "dist", "type": "distribution", "tolerances": {"tvd": 0.05}}
+    ]
+}
+```
+
+Supported ops: `all_of`, `any_of`, `best_effort`, `with_fallback`.
+
+- `best_effort` records inner contract results but does not fail overall.
+- `with_fallback` switches to fallback when primary returns a
+    `NotImplementedError`-class failure.
 
 ### Contract Example
 
@@ -133,7 +206,7 @@ export_to_otel_sdk(spans)  # Spans appear in any configured OTel exporter
 
 ## Caching
 
-QOCC uses a content-addressed compilation cache keyed by `SHA-256(circuit_hash || pipeline_dict || backend_version)`. Cache hits are recorded in `cache_index.json` inside the bundle for reproducibility auditing. Cache hits now **skip recompilation entirely** by deserialising cached results.
+QOCC uses a content-addressed compilation cache keyed by `SHA-256(circuit_hash || pipeline_dict || backend_version || extra)` where `extra` can include search seed and noise model provenance hash. Cache hits are recorded in `cache_index.json` inside the bundle for reproducibility auditing. Cache hits now **skip recompilation entirely** by deserialising cached results.
 
 ```python
 from qocc.core.cache import CompilationCache
@@ -191,9 +264,9 @@ qocc trace compare bundle.zip replayed.zip --report diff/
 |---------|--------|
 | Qiskit  | ✅ Full (per-stage spans, statevector sim) |
 | Cirq    | ✅ Full (per-pass spans, statevector sim) |
-| pytket  | 🔜 Planned |
+| pytket  | ✅ Full (pass-sequence compile spans, deterministic JSON hash) |
 | CUDA-Q  | 🔜 Optional |
-| Stim/PyMatching | 🔜 QEC mode |
+| Stim/PyMatching | ✅ QEC mode (DEM + decoder stats metadata) |
 
 ## Development
 

@@ -33,6 +33,10 @@
       },
       "description": "Additional parameter grids {key: [val1, val2, ...]}."
     },
+    "noise_model": {
+      "type": ["object", "null"],
+      "description": "Optional provider-agnostic noise model payload used for noise-aware surrogate scoring."
+    },
     "strategy": {
       "type": "string",
       "enum": ["grid", "random", "bayesian"],

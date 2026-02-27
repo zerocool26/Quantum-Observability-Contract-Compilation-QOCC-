@@ -2,6 +2,181 @@
 
 All notable changes to the QOCC project are documented here.
 
+## [Unreleased] — Phase 10 (Backend Expansion, Part 1)
+
+### Added
+- **Production `tket` adapter** (`qocc.adapters.tket_adapter`) implementing:
+  ingest (`.qasm`, JSON, native circuit), canonical normalization
+  (`RemoveRedundancies` + `CommuteThroughMultis`), per-pass compile spans,
+  optional-extension simulation hooks (`qulacs`/`projectq`), deterministic
+  JSON-based hashing, backend metadata (`active_extension`, `pass_set_hash`).
+- **Adapter fallback wiring** — `get_adapter("tket")` now lazy-imports
+  the built-in `TketAdapter`.
+- **Packaging support for pytket** — new optional dependency extra
+  `qocc[tket]` and adapter entry-point registration under
+  `[project.entry-points."qocc.adapters"]`.
+- **CLI support** — `qocc trace run --adapter tket` is now accepted.
+- **Phase 10 tket test suite** (`tests/test_phase10_tket_adapter.py`) with
+  mocked pytket objects covering ingest/normalize/compile/simulate/export,
+  helper utilities, adapter fallback, and backend metadata.
+
+### Validation
+- Full test suite passes after changes.
+
+## [Unreleased] — Phase 10 (Backend Expansion, Part 2)
+
+### Added
+- **Production `stim` adapter** (`qocc.adapters.stim_adapter`) implementing
+  ingest (`.stim` path, raw text, native circuit), DEM generation during
+  compile, shot sampling, syndrome-weight distribution, logical error-rate
+  metadata, and optional `pymatching`/`sinter` integration hooks.
+- **QEC contract type** (`ContractType.QEC`) and evaluator
+  (`qocc.contracts.eval_qec:evaluate_qec_contract`) with checks for:
+  logical error-rate threshold, code distance floor, and syndrome weight budget.
+- **QEC bundle schema artifacts**: `dem.json`, `logical_error_rates.json`,
+  `decoder_stats.json` with schema files in `schemas/` and validation wiring.
+
+### Changed
+- `check_contract()` and search-time candidate contract evaluation now support
+  `qec` contracts.
+- Search validator now preserves simulation metadata in
+  `candidate.validation_result` for downstream evaluators.
+- `qocc trace run --adapter` now accepts `stim`; adapter registry fallback
+  supports `get_adapter("stim")`.
+
+### Packaging
+- Added optional extra: `qocc[stim]`.
+- Added adapter entry-point: `stim = qocc.adapters.stim_adapter:StimAdapter`.
+- Added evaluator entry-point: `qec = qocc.contracts.eval_qec:evaluate_qec_contract`.
+
+## [Unreleased] — Phase 10 (Search Intelligence, Part 3)
+
+### Added
+- **Noise model registry** (`qocc.metrics.noise_model`) with provider-agnostic
+  `NoiseModel` dataclass, built-in presets, schema-validated file loading,
+  and deterministic `stable_hash()` for provenance.
+- **Noise model schema**: `schemas/noise_model.schema.json` plus in-memory
+  registry export support via `qocc.core.schemas.NOISE_MODEL_SCHEMA`.
+- **CLI support** for noise-aware search scoring:
+  `qocc compile search --noise-model noise.json`.
+
+### Changed
+- `SearchSpaceConfig` now supports optional `noise_model` payload.
+- Surrogate scoring now accepts optional noise model context and computes a
+  `noise_score` term (gate error + readout + decoherence) with model hash
+  attached to scoring metadata.
+- Search cache provenance now factors in `noise_model_hash`, so different
+  noise assumptions produce distinct cache keys/hits.
+
+### Validation
+- Added `tests/test_phase10_noise_model.py`.
+- Full test suite: **398 passed, 5 skipped**.
+
+## [Unreleased] — Phase 13 (Regression Tracking Database)
+
+### Added
+- **SQLite regression database**: `qocc.core.regression_db.RegressionDatabase`
+  with `ingest()`, `query()`, `tag()`, and `detect_regressions()` APIs.
+- **New CLI command group**: `qocc db` with:
+  - `qocc db ingest <bundle>`
+  - `qocc db query [--circuit-hash ...] [--adapter ...] [--since ...]`
+  - `qocc db tag <bundle> --tag baseline`
+- **Trace integration**: `qocc trace run --db [--db-path ...]` now auto-ingests
+  newly generated bundles into the regression database.
+- **Phase 10 regression DB tests**: `tests/test_phase10_regression_db.py`.
+
+### Validation
+- Full test suite: **403 passed, 5 skipped**.
+
+## [Unreleased] — Phase 13 (Interactive HTML Trace Viewer)
+
+### Added
+- **Interactive HTML report exporter**: `qocc.trace.html_report.export_html_report()`
+  generates a self-contained report (no CDN dependencies) with:
+  - flame-chart timeline with per-span attribute hover
+  - metric dashboard for candidate/compiled metrics
+  - contract pass/fail panel with CI bar rendering when available
+  - optional compare-bundle diff table
+  - circuit gate-histogram input vs compiled overlay table
+- **New CLI command**: `qocc trace html --bundle ... --out ... [--compare ...]`.
+- **Trace-run integration**: `qocc trace run --html [--html-out ...]`.
+- **Phase 13 HTML report tests**: `tests/test_phase13_html_report.py`.
+
+### Validation
+- Full test suite: **406 passed, 5 skipped**.
+
+## [Unreleased] — Phase 13 (Jupyter Widget Integration)
+
+### Added
+- **Jupyter widget module**: `qocc.trace.jupyter_widget` using optional
+  `ipywidgets` + `plotly` dependencies (`qocc[jupyter]`).
+- **Notebook helper APIs** exposed at top-level package:
+  - `qocc.show_bundle(bundle_path)`
+  - `qocc.compare_interactive(bundle_a, bundle_b)`
+  - `qocc.search_dashboard(search_result)`
+- **Phase 13.2 tests**: `tests/test_phase13_jupyter_widget.py`.
+
+### Validation
+- Full test suite: **411 passed, 5 skipped**.
+
+## [Unreleased] — Phase 14 (Contract DSL)
+
+### Added
+- **Contract DSL parser**: `qocc.contracts.dsl.parse_contract_dsl(text)` with
+  location-aware syntax errors (`line`, `column`) via `ContractDSLParseError`.
+- **CLI support**: `qocc contract check --contracts` now accepts both `.json`
+  and `.qocc` files.
+- **API support**:
+  - `check_contract(..., contract_spec="*.qocc")`
+  - `search_compile(..., contracts="*.qocc")`
+- **Contracts package export**: `parse_contract_dsl` re-exported from
+  `qocc.contracts`.
+- **Phase 14 tests**: `tests/test_phase14_contract_dsl.py`.
+
+### Validation
+- Full test suite: **417 passed, 5 skipped**.
+
+## [Unreleased] — Phase 14 (Parametric Contracts)
+
+### Added
+- **Parametric expression resolver**: `qocc.contracts.parametric.resolve_contract_spec`
+  with safe arithmetic expression evaluation (`+`, `-`, `*`, `/`, `**`, `%`) and
+  symbol binding from runtime context.
+- **Runtime context support** for symbolic tolerances/budgets including:
+  - compiled metrics (`depth`, `gates_2q`, `compiled_depth`, ...)
+  - input metrics (`input_depth`, ...)
+  - baseline metrics (`baseline_*` when provided in bundle metrics)
+  - contract-local numeric fields (e.g., `error_budget` from `spec`).
+- **Evaluation-time integration**:
+  - `check_contract()` resolves parametric fields before evaluator dispatch.
+  - `search_compile()` resolves parametric fields per candidate before contract checks.
+- **DSL extension**: constraint RHS now accepts expressions (not only numeric literals).
+- **Phase 14 parametric tests**: `tests/test_phase14_parametric_contracts.py`.
+
+### Validation
+- Full test suite: **421 passed, 5 skipped**.
+
+## [Unreleased] — Phase 14 (Contract Composition)
+
+### Added
+- **Composition evaluator**: `qocc.contracts.composition.evaluate_contract_entry`
+  with JSON-envelope support for:
+  - `all_of([c1, c2, ...])`
+  - `any_of([c1, c2, ...])`
+  - `best_effort(contract)`
+  - `with_fallback(primary, fallback)`
+- **Leaf-flatten helper**: `iter_leaf_contract_dicts()` for simulation prep and
+  contract metadata handling.
+- **`check_contract()` integration** for top-level composed contract trees.
+- **`search_compile()` integration** for composed contracts during per-candidate
+  validation/evaluation.
+- **NotImplemented fallback semantics**: custom evaluator failures tagged as
+  `NotImplementedError: ...` trigger `with_fallback` secondary evaluation.
+- **Phase 14 composition tests**: `tests/test_phase14_contract_composition.py`.
+
+### Validation
+- Full test suite: **424 passed, 5 skipped**.
+
 ## [Unreleased] — Phase 9 (Correctness, Performance & Hygiene)
 
 ### Fixed (High)

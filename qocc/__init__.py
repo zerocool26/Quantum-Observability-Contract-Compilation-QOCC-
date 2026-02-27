@@ -11,6 +11,7 @@ DEFAULT_SEED: int = 42
 DEFAULT_RNG_ALGORITHM: str = "PCG64"
 
 from qocc.api import check_contract, compare_bundles, run_trace, search_compile
+from qocc.trace.jupyter_widget import compare_interactive, search_dashboard, show_bundle
 
 __all__ = [
     "__version__",
@@ -20,4 +21,7 @@ __all__ = [
     "compare_bundles",
     "check_contract",
     "search_compile",
+    "show_bundle",
+    "compare_interactive",
+    "search_dashboard",
 ]

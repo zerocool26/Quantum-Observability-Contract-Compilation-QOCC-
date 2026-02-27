@@ -33,6 +33,8 @@ def compile_group() -> None:
               help="Selection mode: single (best surrogate) or pareto (multi-objective).")
 @click.option("--strategy", type=click.Choice(["grid", "random", "bayesian"]), default="grid",
               help="Search strategy: grid (exhaustive), random (sampling), bayesian (adaptive).")
+@click.option("--noise-model", type=click.Path(exists=True), default=None,
+              help="Optional noise model JSON file for noise-aware surrogate scoring.")
 @click.option("--out", "-o", "output", type=click.Path(), default=None,
               help="Output bundle path.")
 def compile_search(
@@ -45,6 +47,7 @@ def compile_search(
     shots: int,
     mode: str,
     strategy: str,
+    noise_model: str | None,
     output: str | None,
 ) -> None:
     """Generate, compile, score, validate, and select best pipeline.
@@ -85,6 +88,8 @@ def compile_search(
         search_config = {}
     # Inject strategy from CLI flag
     search_config.setdefault("strategy", strategy)
+    if noise_model:
+        search_config["noise_model"] = validate_json_file(noise_model, "noise_model", strict=False)
 
     # Load and validate contracts
     contract_data = None

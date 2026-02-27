@@ -51,6 +51,7 @@ def validate_candidates(
                 "counts": result.counts,
                 "shots": result.shots,
                 "seed": result.seed,
+                "metadata": result.metadata,
             }
         except Exception as exc:
             candidate.validated = False

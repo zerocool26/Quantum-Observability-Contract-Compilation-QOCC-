@@ -28,6 +28,9 @@ _FILE_SCHEMA_MAP: dict[str, str] = {
     "search_space.json": "search_space",
     "search_result.json": "search_result",
     "search_rankings.json": "search_rankings",
+    "dem.json": "dem",
+    "logical_error_rates.json": "logical_error_rates",
+    "decoder_stats.json": "decoder_stats",
 }
 
 

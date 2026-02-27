@@ -89,9 +89,9 @@
 ## Future (v0.5+)
 
 ### Additional adapters:
-- [ ] pytket adapter
+- [x] pytket adapter
 - [ ] CUDA-Q adapter (optional)
-- [ ] Stim/PyMatching/sinter (QEC mode)
+- [x] Stim/PyMatching/sinter (QEC mode)
 
 ### Advanced features:
 - [ ] GPU simulation backend integration
@@ -99,9 +99,16 @@
 - [ ] CI/CD integration guides and GitHub Actions templates
 - [x] OpenTelemetry OTLP JSON export (bridge to existing observability stacks)
 - [x] Bayesian optimization for compilation search (`--strategy bayesian`)
+- [x] Noise-model-aware surrogate scoring + provenance hashing
 - [x] SPRT early stopping (statistically optimal termination)
 - [x] Parallel candidate compilation (ThreadPoolExecutor)
 - [x] Random search strategy (`--strategy random`)
+- [x] Regression tracking database (`qocc db` + `trace run --db`)
+- [x] Interactive HTML trace viewer (`qocc trace html` + `trace run --html`)
+- [x] Jupyter widget integration (`qocc.show_bundle`, `qocc.compare_interactive`, `qocc.search_dashboard`)
+- [x] Contract DSL support (`.qocc` files in `contract check` and API)
+- [x] Parametric contracts (evaluation-time symbolic tolerance resolution)
+- [x] Contract composition (`all_of`, `any_of`, `best_effort`, `with_fallback`)
 
 ---
 

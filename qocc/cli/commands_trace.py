@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 
 import click
 from rich.console import Console
@@ -20,7 +21,7 @@ def trace() -> None:
 
 
 @trace.command("run")
-@click.option("--adapter", "-a", required=True, type=click.Choice(["qiskit", "cirq"]),
+@click.option("--adapter", "-a", required=True, type=click.Choice(["qiskit", "cirq", "tket", "stim"]),
               help="Backend adapter to use.")
 @click.option("--input", "-i", "input_path", required=True, type=click.Path(exists=True),
               help="Input circuit file (QASM).")
@@ -31,6 +32,14 @@ def trace() -> None:
 @click.option("--seed", type=int, default=DEFAULT_SEED, help="Global seed.")
 @click.option("--repeat", "-n", type=int, default=1,
               help="Repeat compilation N times for nondeterminism detection (>=2).")
+@click.option("--db/--no-db", "ingest_db", default=False,
+              help="Auto-ingest resulting bundle into regression DB.")
+@click.option("--db-path", type=click.Path(), default=None,
+              help="Path to regression sqlite database (used with --db).")
+@click.option("--html/--no-html", "emit_html", default=False,
+              help="Generate interactive HTML report for the output bundle.")
+@click.option("--html-out", type=click.Path(), default=None,
+              help="Output path for HTML report (used with --html).")
 def trace_run(
     adapter: str,
     input_path: str,
@@ -38,6 +47,10 @@ def trace_run(
     output: str | None,
     seed: int,
     repeat: int,
+    ingest_db: bool,
+    db_path: str | None,
+    emit_html: bool,
+    html_out: str | None,
 ) -> None:
     """Run an instrumented compilation trace and produce a Trace Bundle."""
     from qocc.api import run_trace
@@ -108,6 +121,23 @@ def trace_run(
 
     console.print(table)
 
+    if ingest_db:
+        from qocc.core.regression_db import RegressionDatabase
+
+        db = RegressionDatabase(db_path)
+        ingest_result = db.ingest(result["bundle_zip"])
+        console.print("[green]✓ Ingested into regression DB[/green]")
+        console.print(f"  Rows: {ingest_result['rows_ingested']}")
+        console.print(f"  DB:   {ingest_result['db_path']}")
+
+    if emit_html:
+        from qocc.trace.html_report import export_html_report
+
+        default_html = str(Path(result["bundle_zip"]).with_suffix(".html"))
+        html_path = export_html_report(result["bundle_zip"], html_out or default_html)
+        console.print("[green]✓ HTML report created[/green]")
+        console.print(f"  Report: {html_path}")
+
 
 @trace.command("timeline")
 @click.argument("bundle", type=click.Path(exists=True))
@@ -119,6 +149,22 @@ def trace_timeline(bundle: str, width: int, attrs: bool) -> None:
 
     timeline = render_timeline_from_bundle(bundle, width=width, show_attributes=attrs)
     console.print(timeline)
+
+
+@trace.command("html")
+@click.option("--bundle", "bundle_path", required=True, type=click.Path(exists=True),
+              help="Bundle zip or directory to render.")
+@click.option("--out", "output_path", required=True, type=click.Path(),
+              help="Output HTML report path.")
+@click.option("--compare", "compare_bundle", type=click.Path(exists=True), default=None,
+              help="Optional second bundle for side-by-side diff view.")
+def trace_html(bundle_path: str, output_path: str, compare_bundle: str | None) -> None:
+    """Generate an interactive self-contained HTML report for a trace bundle."""
+    from qocc.trace.html_report import export_html_report
+
+    report_path = export_html_report(bundle_path, output_path, compare_bundle_path=compare_bundle)
+    console.print("[green]✓ HTML report created[/green]")
+    console.print(f"  Report: {report_path}")
 
 
 # ── compare subcommand (canonical location) ──────────────────
@@ -145,12 +191,25 @@ def trace_replay(bundle: str, output: str | None) -> None:
 
     console.print(f"  Run ID:   {result.original_run_id}")
 
+    input_status = getattr(
+        result,
+        "input_hash_status",
+        "matched" if result.input_hash_match else "mismatched",
+    )
+    compiled_status = getattr(
+        result,
+        "compiled_hash_status",
+        "matched" if result.compiled_hash_match else "mismatched",
+    )
+
     if result.bit_exact:
         console.print(f"  [green]✓ BIT-EXACT match[/green]")
+        console.print(f"    Input hash status:    {input_status}")
+        console.print(f"    Compiled hash status: {compiled_status}")
     else:
         console.print(f"  [yellow]⚠ Differences detected:[/yellow]")
-        console.print(f"    Input hash match:    {'✓' if result.input_hash_match else '✗'}")
-        console.print(f"    Compiled hash match: {'✓' if result.compiled_hash_match else '✗'}")
+        console.print(f"    Input hash status:    {input_status}")
+        console.print(f"    Compiled hash status: {compiled_status}")
         console.print(f"    Metrics match:       {'✓' if result.metrics_match else '✗'}")
         if result.diff:
             for k, v in result.diff.items():

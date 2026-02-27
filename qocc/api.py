@@ -26,6 +26,7 @@ from qocc.adapters.base import get_adapter
 from qocc.core.artifacts import ArtifactStore
 from qocc.core.cache import CompilationCache
 from qocc.core.circuit_handle import PipelineSpec
+from qocc.core.hashing import hash_dict, hash_string
 from qocc.trace.emitter import TraceEmitter
 
 logger = logging.getLogger("qocc")
@@ -441,6 +442,7 @@ def check_contract(
     simulation_shots: int = 1024,
     simulation_seed: int = DEFAULT_SEED,
     max_memory_mb: float | None = None,
+    max_cache_age_days: float | None = None,
 ) -> list[dict[str, Any]]:
     """Evaluate contracts against a bundle or circuits.
 
@@ -477,6 +479,9 @@ def check_contract(
         evaluate_clifford_contract,
         is_clifford_circuit,
     )
+    from qocc.contracts.eval_qec import evaluate_qec_contract
+    from qocc.contracts.parametric import ParametricResolutionError, resolve_contract_spec
+    from qocc.contracts.composition import evaluate_contract_entry, iter_leaf_contract_dicts
 
     # Load bundle
     if isinstance(bundle_or_circuits, str):
@@ -487,11 +492,24 @@ def check_contract(
     # Load contract specs
     if isinstance(contract_spec, str):
         p = Path(contract_spec)
-        specs_data = json.loads(p.read_text(encoding="utf-8"))
+        if p.suffix.lower() == ".qocc":
+            from qocc.contracts.dsl import parse_contract_dsl
+
+            specs_data = [s.to_dict() for s in parse_contract_dsl(p.read_text(encoding="utf-8"))]
+        else:
+            specs_data = json.loads(p.read_text(encoding="utf-8"))
     else:
         specs_data = contract_spec
 
-    specs = [ContractSpec.from_dict(s) for s in specs_data]
+    entries: list[dict[str, Any]]
+    if isinstance(specs_data, list):
+        entries = [e for e in specs_data if isinstance(e, dict)]
+    elif isinstance(specs_data, dict):
+        entries = [specs_data]
+    else:
+        raise ValueError("contract_spec must be a dict/list of dicts or a path to a supported contract file")
+
+    leaf_specs = [ContractSpec.from_dict(s) for s in iter_leaf_contract_dicts(entries)]
     results: list[dict[str, Any]] = []
 
     # Try to extract simulation data from bundle
@@ -534,7 +552,7 @@ def check_contract(
     sim_counts_input: dict[str, int] | None = None
     sim_counts_compiled: dict[str, int] | None = None
     need_simulation = any(
-        s.type in ("distribution", "observable") for s in specs
+        s.type in ("distribution", "observable") for s in leaf_specs
     )
 
     if need_simulation and adapter and input_handle and compiled_handle:
@@ -542,7 +560,7 @@ def check_contract(
 
         # Determine effective shots: min(simulation_shots, per-contract max_shots)
         effective_shots = simulation_shots
-        for s in specs:
+        for s in leaf_specs:
             if s.type in ("distribution", "observable"):
                 budget_max = s.resource_budget.get("max_shots")
                 if budget_max is not None:
@@ -550,7 +568,7 @@ def check_contract(
 
         # Determine max_runtime budget (seconds) — use the minimum across contracts
         max_runtime: float | None = None
-        for s in specs:
+        for s in leaf_specs:
             if s.type in ("distribution", "observable"):
                 rt = s.resource_budget.get("max_runtime")
                 if rt is not None:
@@ -597,134 +615,81 @@ def check_contract(
     if max_memory_mb is not None and not _tm_was_tracing:
         _tm.start()
 
-    for spec in specs:
-        result: ContractResult
+    contract_cache = CompilationCache()
 
-        # ── Check evaluator registry first (plugin dispatch) ─
-        if spec.evaluator not in ("auto", ""):
-            from qocc.contracts.registry import get_evaluator
+    circuit_hash_for_cache = _resolve_contract_circuit_hash(bundle, compiled_handle)
 
-            custom_fn = get_evaluator(spec.evaluator)
-            if custom_fn is not None:
-                try:
-                    result = custom_fn(
-                        spec,
-                        counts_before=sim_counts_input,
-                        counts_after=sim_counts_compiled,
-                        input_handle=input_handle,
-                        compiled_handle=compiled_handle,
-                        adapter=adapter,
-                        bundle=bundle,
-                    )
-                    results.append(result.to_dict())
-                    continue
-                except Exception as exc:
-                    result = ContractResult(
-                        name=spec.name,
-                        passed=False,
-                        details={"error": f"Custom evaluator {spec.evaluator!r} failed: {exc}"},
-                    )
-                    results.append(result.to_dict())
-                    continue
-
-        # ── Distribution contract ────────────────────────────
-        if spec.type == "distribution":
-            if sim_counts_input and sim_counts_compiled:
-                result = evaluate_distribution_contract(
-                    spec, sim_counts_input, sim_counts_compiled,
-                )
-            else:
-                result = ContractResult(
-                    name=spec.name,
-                    passed=False,
-                    details={
-                        "type": "distribution",
-                        "error": "No simulation data available. "
-                                 "Install adapter extras and provide circuit files.",
-                    },
-                )
-
-        # ── Observable contract ──────────────────────────────
-        elif spec.type == "observable":
-            if sim_counts_input and sim_counts_compiled:
-                # Convert counts to expectation values
-                # (assume computational-basis Z observable: +1 for |0⟩, -1 for |1⟩)
-                values_before = _counts_to_observable_values(sim_counts_input)
-                values_after = _counts_to_observable_values(sim_counts_compiled)
-                result = evaluate_observable_contract(
-                    spec, values_before, values_after,
-                )
-            else:
-                result = ContractResult(
-                    name=spec.name,
-                    passed=False,
-                    details={
-                        "type": "observable",
-                        "error": "No simulation data. Install adapter extras.",
-                    },
-                )
-
-        # ── Clifford contract ────────────────────────────────
-        elif spec.type == "clifford":
-            if input_handle and compiled_handle:
-                result = evaluate_clifford_contract(
-                    spec, input_handle, compiled_handle,
-                    counts_before=sim_counts_input,
-                    counts_after=sim_counts_compiled,
-                )
-            else:
-                result = ContractResult(
-                    name=spec.name,
-                    passed=False,
-                    details={
-                        "type": "clifford",
-                        "error": "Circuit handles not available for Clifford check.",
-                    },
-                )
-
-        # ── Exact statevector contract ───────────────────────
-        elif spec.type == "exact":
-            sv_before = None
-            sv_after = None
-            if adapter and input_handle and compiled_handle:
-                try:
-                    from qocc.adapters.base import SimulationSpec as SS
-
-                    sv_spec = SS(shots=0, method="statevector")
-                    sv_res_in = adapter.simulate(input_handle, sv_spec)
-                    sv_res_out = adapter.simulate(compiled_handle, sv_spec)
-                    sv_before = sv_res_in.metadata.get("statevector")
-                    sv_after = sv_res_out.metadata.get("statevector")
-                except Exception:
-                    pass
-
-            if sv_before is not None and sv_after is not None:
-                result = evaluate_exact_equivalence(spec, sv_before, sv_after)
-            else:
-                result = ContractResult(
-                    name=spec.name,
-                    passed=False,
-                    details={
-                        "type": "exact",
-                        "error": "Statevector simulation not available.",
-                    },
-                )
-
-        # ── Cost/resource budget contract ────────────────────
-        elif spec.type == "cost":
-            result = _evaluate_cost_contract(spec, compiled_metrics)
-
-        # ── Unknown type ─────────────────────────────────────
-        else:
-            result = ContractResult(
-                name=spec.name,
+    def _evaluate_leaf(entry: dict[str, Any]) -> ContractResult:
+        try:
+            spec = ContractSpec.from_dict(entry)
+        except Exception as exc:
+            return ContractResult(
+                name=str(entry.get("name", "invalid")),
                 passed=False,
-                details={
-                    "type": spec.type,
-                    "error": f"Unknown contract type: {spec.type!r}",
-                },
+                details={"type": "invalid", "error": f"Invalid contract leaf: {exc}"},
             )
 
+        try:
+            spec = resolve_contract_spec(
+                spec,
+                bundle=bundle,
+                input_metrics=input_metrics,
+                compiled_metrics=compiled_metrics,
+            )
+        except ParametricResolutionError as exc:
+            return ContractResult(
+                name=spec.name,
+                passed=False,
+                details={"type": spec.type, "error": str(exc)},
+            )
+
+        spec_hash = hash_dict(spec.to_dict())
+        cache_key = _contract_result_cache_key(
+            circuit_hash=circuit_hash_for_cache,
+            contract_spec_hash=spec_hash,
+            shots=simulation_shots,
+            seed=simulation_seed,
+        )
+
+        if _is_contract_cache_fresh(contract_cache, cache_key, max_cache_age_days):
+            cached = contract_cache.get(cache_key)
+            if isinstance(cached, dict) and {"name", "passed", "details"}.issubset(cached.keys()):
+                return ContractResult(
+                    name=str(cached.get("name", spec.name)),
+                    passed=bool(cached.get("passed", False)),
+                    details=dict(cached.get("details", {})),
+                )
+
+        evaluated = _evaluate_check_contract_leaf(
+            spec=spec,
+            bundle=bundle,
+            compiled_metrics=compiled_metrics,
+            adapter=adapter,
+            input_handle=input_handle,
+            compiled_handle=compiled_handle,
+            sim_counts_input=sim_counts_input,
+            sim_counts_compiled=sim_counts_compiled,
+        )
+
+        evaluated_dict = evaluated.to_dict()
+        details = evaluated_dict.get("details", {})
+        if isinstance(details, dict):
+            details.setdefault("shot_count_used", simulation_shots)
+        contract_cache.put(
+            cache_key,
+            evaluated_dict,
+            metadata={
+                "kind": "contract_result",
+                "circuit_hash": circuit_hash_for_cache,
+                "contract_spec_hash": spec_hash,
+                "shots": simulation_shots,
+                "seed": simulation_seed,
+            },
+        )
+        return evaluated
+
+    for entry in entries:
+        result = evaluate_contract_entry(entry, _evaluate_leaf)
         results.append(result.to_dict())
 
         # ── Post-evaluation memory budget check ──────────────
@@ -736,7 +701,7 @@ def check_contract(
                 results[-1]["_budget"]["exceeded"] = True
                 logger.warning(
                     "Memory budget exceeded: %.1f MiB > %.1f MiB (contract %s)",
-                    peak_mb, max_memory_mb, spec.name,
+                    peak_mb, max_memory_mb, results[-1].get("name", "unknown"),
                 )
 
     # Stop tracemalloc if we started it
@@ -824,6 +789,201 @@ def _evaluate_cost_contract(
     )
 
 
+def _evaluate_check_contract_leaf(
+    spec: Any,
+    bundle: dict[str, Any],
+    compiled_metrics: dict[str, Any],
+    adapter: Any,
+    input_handle: Any,
+    compiled_handle: Any,
+    sim_counts_input: dict[str, int] | None,
+    sim_counts_compiled: dict[str, int] | None,
+) -> Any:
+    """Evaluate one leaf contract for check_contract()."""
+    from qocc.contracts.eval_sampling import (
+        evaluate_distribution_contract,
+        evaluate_observable_contract,
+        _counts_to_observable_values,
+    )
+    from qocc.contracts.eval_exact import evaluate_exact_equivalence
+    from qocc.contracts.eval_clifford import evaluate_clifford_contract
+    from qocc.contracts.eval_qec import evaluate_qec_contract
+    from qocc.contracts.registry import get_evaluator
+    from qocc.contracts.spec import ContractResult
+
+    if spec.evaluator not in ("auto", ""):
+        custom_fn = get_evaluator(spec.evaluator)
+        if custom_fn is not None:
+            try:
+                return custom_fn(
+                    spec,
+                    counts_before=sim_counts_input,
+                    counts_after=sim_counts_compiled,
+                    input_handle=input_handle,
+                    compiled_handle=compiled_handle,
+                    adapter=adapter,
+                    bundle=bundle,
+                )
+            except NotImplementedError as exc:
+                return ContractResult(
+                    name=spec.name,
+                    passed=False,
+                    details={"type": spec.type, "error": f"NotImplementedError: {exc}"},
+                )
+            except Exception as exc:
+                return ContractResult(
+                    name=spec.name,
+                    passed=False,
+                    details={"type": spec.type, "error": f"Custom evaluator {spec.evaluator!r} failed: {exc}"},
+                )
+
+    if spec.type == "distribution":
+        if sim_counts_input and sim_counts_compiled:
+            return evaluate_distribution_contract(spec, sim_counts_input, sim_counts_compiled)
+        return ContractResult(
+            name=spec.name,
+            passed=False,
+            details={
+                "type": "distribution",
+                "error": "No simulation data available. Install adapter extras and provide circuit files.",
+            },
+        )
+
+    if spec.type == "observable":
+        if sim_counts_input and sim_counts_compiled:
+            values_before = _counts_to_observable_values(sim_counts_input)
+            values_after = _counts_to_observable_values(sim_counts_compiled)
+            return evaluate_observable_contract(spec, values_before, values_after)
+        return ContractResult(
+            name=spec.name,
+            passed=False,
+            details={"type": "observable", "error": "No simulation data. Install adapter extras."},
+        )
+
+    if spec.type == "clifford":
+        if input_handle and compiled_handle:
+            return evaluate_clifford_contract(
+                spec,
+                input_handle,
+                compiled_handle,
+                counts_before=sim_counts_input,
+                counts_after=sim_counts_compiled,
+            )
+        return ContractResult(
+            name=spec.name,
+            passed=False,
+            details={"type": "clifford", "error": "Circuit handles not available for Clifford check."},
+        )
+
+    if spec.type == "exact":
+        sv_before = None
+        sv_after = None
+        if adapter and input_handle and compiled_handle:
+            try:
+                from qocc.adapters.base import SimulationSpec as SS
+
+                sv_spec = SS(shots=0, method="statevector")
+                sv_res_in = adapter.simulate(input_handle, sv_spec)
+                sv_res_out = adapter.simulate(compiled_handle, sv_spec)
+                sv_before = sv_res_in.metadata.get("statevector")
+                sv_after = sv_res_out.metadata.get("statevector")
+            except Exception:
+                pass
+
+        if sv_before is not None and sv_after is not None:
+            return evaluate_exact_equivalence(spec, sv_before, sv_after)
+        return ContractResult(
+            name=spec.name,
+            passed=False,
+            details={"type": "exact", "error": "Statevector simulation not available."},
+        )
+
+    if spec.type == "cost":
+        return _evaluate_cost_contract(spec, compiled_metrics)
+
+    if spec.type == "qec":
+        return evaluate_qec_contract(
+            spec,
+            bundle=bundle,
+            compiled_metrics=compiled_metrics,
+            simulation_metadata={
+                "logical_error_rates": bundle.get("logical_error_rates"),
+                "decoder_stats": bundle.get("decoder_stats"),
+            },
+        )
+
+    return ContractResult(
+        name=spec.name,
+        passed=False,
+        details={"type": spec.type, "error": f"Unknown contract type: {spec.type!r}"},
+    )
+
+
+def _contract_result_cache_key(
+    circuit_hash: str,
+    contract_spec_hash: str,
+    shots: int,
+    seed: int,
+) -> str:
+    """Contract-result cache key per Phase 14.4 spec."""
+    return hash_string(f"{circuit_hash}||{contract_spec_hash}||{shots}||{seed}")
+
+
+def _is_contract_cache_fresh(
+    cache: CompilationCache,
+    key: str,
+    max_cache_age_days: float | None,
+) -> bool:
+    """Return True when cache entry exists and is younger than max age."""
+    if not cache.has(key):
+        return False
+    if max_cache_age_days is None:
+        return True
+
+    meta_path = cache.root / key / "meta.json"
+    if not meta_path.exists():
+        return False
+
+    try:
+        import time
+
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        created = float(meta.get("created", 0.0) or 0.0)
+        if created <= 0.0:
+            return False
+        age_days = (time.time() - created) / 86400.0
+        return age_days <= max_cache_age_days
+    except Exception:
+        return False
+
+
+def _resolve_contract_circuit_hash(bundle: dict[str, Any], compiled_handle: Any | None) -> str:
+    """Resolve stable circuit hash for contract-result cache key generation."""
+    if compiled_handle is not None:
+        try:
+            return str(compiled_handle.stable_hash())
+        except Exception:
+            pass
+
+    root = bundle.get("_root")
+    if root:
+        root_path = Path(root)
+        for rel in ("circuits/selected.qasm", "circuits/normalized.qasm", "circuits/input.qasm"):
+            fp = root_path / rel
+            if fp.exists():
+                try:
+                    return hash_string(fp.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+
+    metrics = bundle.get("metrics", {})
+    compiled_metrics = metrics.get("compiled", {}) if isinstance(metrics, dict) else {}
+    if isinstance(compiled_metrics, dict) and compiled_metrics:
+        return hash_dict(compiled_metrics)
+
+    return "unknown_circuit_hash"
+
+
 def search_compile(
     adapter_name: str,
     input_source: str | Any,
@@ -857,12 +1017,15 @@ def search_compile(
         SearchResult dict with selected candidate and full rankings.
     """
     from qocc.search.space import SearchSpaceConfig, Candidate, generate_candidates
-    from qocc.search.scorer import surrogate_score, rank_candidates
+    from qocc.search.scorer import rank_candidates
     from qocc.search.validator import validate_candidates
     from qocc.search.selector import select_best
     from qocc.adapters.base import SimulationSpec
     from qocc.trace.emitter import TraceEmitter
     from qocc.contracts.spec import ContractSpec
+    from qocc.metrics.noise_model import NoiseModel, NoiseModelRegistry
+    from qocc.contracts.composition import evaluate_contract_entry, iter_leaf_contract_dicts
+    from qocc.contracts.parametric import resolve_contract_spec, ParametricResolutionError
 
     # ── Validate inputs ──────────────────────────────────────
     if top_k < 1:
@@ -886,13 +1049,39 @@ def search_compile(
     cfg_data.setdefault("adapter", adapter_name)
     config = SearchSpaceConfig.from_dict(cfg_data)
 
+    noise_model_payload: dict[str, Any] | None = (
+        config.noise_model if isinstance(config.noise_model, dict) else None
+    )
+    noise_model_hash: str | None = None
+    if noise_model_payload:
+        nm = NoiseModel.from_dict(noise_model_payload)
+        noise_model_hash = nm.stable_hash()
+    elif isinstance(cfg_data.get("noise_model"), str):
+        registry = NoiseModelRegistry()
+        nm = registry.load_from_file(cfg_data["noise_model"])
+        noise_model_payload = nm.to_dict()
+        noise_model_hash = nm.stable_hash()
+
     # ── Load contracts ───────────────────────────────────────
+    contract_entries: list[dict[str, Any]] = []
     contract_specs: list[ContractSpec] = []
     if isinstance(contracts, str):
         cp = Path(contracts)
-        contract_specs = [ContractSpec.from_dict(s) for s in json.loads(cp.read_text(encoding="utf-8"))]
+        if cp.suffix.lower() == ".qocc":
+            from qocc.contracts.dsl import parse_contract_dsl
+
+            contract_entries = [s.to_dict() for s in parse_contract_dsl(cp.read_text(encoding="utf-8"))]
+        else:
+            loaded = json.loads(cp.read_text(encoding="utf-8"))
+            if isinstance(loaded, list):
+                contract_entries = [x for x in loaded if isinstance(x, dict)]
+            elif isinstance(loaded, dict):
+                contract_entries = [loaded]
     elif isinstance(contracts, list):
-        contract_specs = [ContractSpec.from_dict(s) for s in contracts]
+        contract_entries = [x for x in contracts if isinstance(x, dict)]
+
+    if contract_entries:
+        contract_specs = [ContractSpec.from_dict(s) for s in iter_leaf_contract_dicts(contract_entries)]
 
     # ── 1. Ingest & normalize ────────────────────────────────
     with emitter.span("ingest") as span:
@@ -937,7 +1126,10 @@ def search_compile(
                 circuit_hash=normalized.stable_hash(),
                 pipeline_dict=candidate.pipeline.to_dict(),
                 backend_version=adapter.describe_backend().version,
-                extra={"seed": candidate.pipeline.parameters.get("seed")},
+                extra={
+                    "seed": candidate.pipeline.parameters.get("seed"),
+                    "noise_model_hash": noise_model_hash,
+                },
             )
             cached = cache.get(c_key)
             if cached is not None:
@@ -1010,8 +1202,10 @@ def search_compile(
 
     # ── 4. Surrogate score & rank ────────────────────────────
     with emitter.span("score_and_rank") as span:
-        ranked = rank_candidates(candidates)
+        ranked = rank_candidates(candidates, noise_model=noise_model_payload)
         span.set_attribute("ranking_complete", True)
+        if noise_model_hash:
+            span.set_attribute("noise_model_hash", noise_model_hash[:16])
 
     # Clamp top_k to candidate count
     effective_top_k = min(top_k, len(ranked))
@@ -1035,10 +1229,13 @@ def search_compile(
             )
             from qocc.contracts.eval_exact import evaluate_exact_equivalence
             from qocc.contracts.eval_clifford import evaluate_clifford_contract
+            from qocc.contracts.eval_qec import evaluate_qec_contract
+            from qocc.contracts.parametric import resolve_contract_spec, ParametricResolutionError
             from qocc.contracts.spec import ContractResult
             from qocc.contracts.registry import get_evaluator
 
             baseline_counts: dict[str, int] | None = None
+            baseline_metrics = adapter.get_metrics(normalized).to_dict()
             needs_sampling = any(s.type in ("distribution", "observable", "clifford") for s in contract_specs)
             if needs_sampling:
                 try:
@@ -1057,13 +1254,36 @@ def search_compile(
                 candidate_counts = candidate.validation_result.get("counts")
                 candidate_contracts: list[dict[str, Any]] = []
 
-                for spec in contract_specs:
-                    if spec.evaluator not in ("auto", ""):
-                        custom_fn = get_evaluator(spec.evaluator)
+                def _eval_candidate_leaf(leaf: dict[str, Any]) -> ContractResult:
+                    try:
+                        spec = ContractSpec.from_dict(leaf)
+                    except Exception as exc:
+                        return ContractResult(
+                            name=str(leaf.get("name", "invalid")),
+                            passed=False,
+                            details={"type": "invalid", "error": f"Invalid contract leaf: {exc}"},
+                        )
+
+                    try:
+                        spec_eval = resolve_contract_spec(
+                            spec,
+                            bundle={"metrics": {"input": baseline_metrics, "compiled": candidate.metrics}},
+                            input_metrics=baseline_metrics,
+                            compiled_metrics=candidate.metrics,
+                        )
+                    except ParametricResolutionError as exc:
+                        return ContractResult(
+                            name=spec.name,
+                            passed=False,
+                            details={"type": spec.type, "error": str(exc)},
+                        )
+
+                    if spec_eval.evaluator not in ("auto", ""):
+                        custom_fn = get_evaluator(spec_eval.evaluator)
                         if custom_fn is not None:
                             try:
-                                custom_result = custom_fn(
-                                    spec,
+                                return custom_fn(
+                                    spec_eval,
                                     counts_before=baseline_counts,
                                     counts_after=candidate_counts,
                                     input_handle=normalized,
@@ -1071,61 +1291,48 @@ def search_compile(
                                     adapter=adapter,
                                     bundle={"metrics": {"compiled": candidate.metrics}},
                                 )
-                                candidate_contracts.append(custom_result.to_dict())
-                                continue
-                            except Exception as exc:
-                                candidate_contracts.append(
-                                    ContractResult(
-                                        name=spec.name,
-                                        passed=False,
-                                        details={
-                                            "error": f"Custom evaluator {spec.evaluator!r} failed: {exc}"
-                                        },
-                                    ).to_dict()
+                            except NotImplementedError as exc:
+                                return ContractResult(
+                                    name=spec_eval.name,
+                                    passed=False,
+                                    details={"type": spec_eval.type, "error": f"NotImplementedError: {exc}"},
                                 )
-                                continue
+                            except Exception as exc:
+                                return ContractResult(
+                                    name=spec_eval.name,
+                                    passed=False,
+                                    details={"type": spec_eval.type, "error": f"Custom evaluator {spec_eval.evaluator!r} failed: {exc}"},
+                                )
 
-                    if spec.type == "distribution":
+                    if spec_eval.type == "distribution":
                         if baseline_counts and candidate_counts:
-                            contract_result = evaluate_distribution_contract(
-                                spec,
-                                baseline_counts,
-                                candidate_counts,
-                            )
-                        else:
-                            contract_result = ContractResult(
-                                name=spec.name,
-                                passed=False,
-                                details={
-                                    "type": "distribution",
-                                    "error": "No simulation data available for candidate contract evaluation.",
-                                },
-                            )
-                    elif spec.type == "observable":
+                            return evaluate_distribution_contract(spec_eval, baseline_counts, candidate_counts)
+                        return ContractResult(
+                            name=spec_eval.name,
+                            passed=False,
+                            details={"type": "distribution", "error": "No simulation data available for candidate contract evaluation."},
+                        )
+                    if spec_eval.type == "observable":
                         if baseline_counts and candidate_counts:
-                            contract_result = evaluate_observable_contract(
-                                spec,
+                            return evaluate_observable_contract(
+                                spec_eval,
                                 _counts_to_observable_values(baseline_counts),
                                 _counts_to_observable_values(candidate_counts),
                             )
-                        else:
-                            contract_result = ContractResult(
-                                name=spec.name,
-                                passed=False,
-                                details={
-                                    "type": "observable",
-                                    "error": "No simulation data available for candidate contract evaluation.",
-                                },
-                            )
-                    elif spec.type == "clifford":
-                        contract_result = evaluate_clifford_contract(
-                            spec,
+                        return ContractResult(
+                            name=spec_eval.name,
+                            passed=False,
+                            details={"type": "observable", "error": "No simulation data available for candidate contract evaluation."},
+                        )
+                    if spec_eval.type == "clifford":
+                        return evaluate_clifford_contract(
+                            spec_eval,
                             normalized,
                             compiled_handle,
                             counts_before=baseline_counts,
                             counts_after=candidate_counts,
                         )
-                    elif spec.type == "exact":
+                    if spec_eval.type == "exact":
                         try:
                             sv_spec = SimulationSpec(shots=0, seed=simulation_seed, method="statevector")
                             sv_before = adapter.simulate(normalized, sv_spec).metadata.get("statevector")
@@ -1133,30 +1340,35 @@ def search_compile(
                         except Exception:
                             sv_before = None
                             sv_after = None
-
                         if sv_before is not None and sv_after is not None:
-                            contract_result = evaluate_exact_equivalence(spec, sv_before, sv_after)
-                        else:
-                            contract_result = ContractResult(
-                                name=spec.name,
-                                passed=False,
-                                details={
-                                    "type": "exact",
-                                    "error": "Statevector simulation not available for candidate.",
-                                },
-                            )
-                    elif spec.type == "cost":
-                        contract_result = _evaluate_cost_contract(spec, candidate.metrics)
-                    else:
-                        contract_result = ContractResult(
-                            name=spec.name,
+                            return evaluate_exact_equivalence(spec_eval, sv_before, sv_after)
+                        return ContractResult(
+                            name=spec_eval.name,
                             passed=False,
-                            details={
-                                "type": spec.type,
-                                "error": f"Unknown contract type: {spec.type!r}",
-                            },
+                            details={"type": "exact", "error": "Statevector simulation not available for candidate."},
                         )
+                    if spec_eval.type == "cost":
+                        return _evaluate_cost_contract(spec_eval, candidate.metrics)
+                    if spec_eval.type == "qec":
+                        sim_meta = candidate.validation_result.get("metadata", {})
+                        return evaluate_qec_contract(
+                            spec_eval,
+                            bundle={
+                                "logical_error_rates": sim_meta.get("logical_error_rates"),
+                                "decoder_stats": sim_meta.get("decoder_stats"),
+                            },
+                            compiled_metrics=candidate.metrics,
+                            simulation_metadata=sim_meta,
+                        )
+                    return ContractResult(
+                        name=spec_eval.name,
+                        passed=False,
+                        details={"type": spec_eval.type, "error": f"Unknown contract type: {spec_eval.type!r}"},
+                    )
 
+                iterable_entries = contract_entries if contract_entries else [s.to_dict() for s in contract_specs]
+                for entry in iterable_entries:
+                    contract_result = evaluate_contract_entry(entry, _eval_candidate_leaf)
                     candidate_contracts.append(contract_result.to_dict())
 
                 candidate.contract_results = candidate_contracts
@@ -1215,7 +1427,7 @@ def search_compile(
     store.write_json("search_result.json", selection.to_dict())
 
     # Write contracts and contract results
-    contract_spec_dicts = [s.to_dict() for s in contract_specs]
+    contract_spec_dicts = contract_entries if contract_entries else [s.to_dict() for s in contract_specs]
     all_contract_results: list[dict[str, Any]] = []
     for c in validated:
         for cr in c.contract_results:
@@ -1228,6 +1440,16 @@ def search_compile(
         sel_handle = circuit_handles.get(selection.selected.candidate_id)
         if sel_handle and sel_handle.qasm3:
             store.write_circuit("selected.qasm", sel_handle.qasm3)
+        if sel_handle and isinstance(sel_handle.metadata, dict):
+            dem = sel_handle.metadata.get("dem")
+            if dem:
+                store.write_json("dem.json", {"dem": dem})
+            logical_error_rates = sel_handle.metadata.get("logical_error_rates")
+            if isinstance(logical_error_rates, dict) and logical_error_rates:
+                store.write_json("logical_error_rates.json", logical_error_rates)
+            decoder_stats = sel_handle.metadata.get("decoder_stats")
+            if isinstance(decoder_stats, dict) and decoder_stats:
+                store.write_json("decoder_stats.json", decoder_stats)
 
     # Generate search summary report
     search_summary = _generate_search_summary(

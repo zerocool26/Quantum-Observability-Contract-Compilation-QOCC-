@@ -21,7 +21,7 @@ def contract() -> None:
 @click.option("--bundle", "-b", required=True, type=click.Path(exists=True),
               help="Trace Bundle to check.")
 @click.option("--contracts", "-c", required=True, type=click.Path(exists=True),
-              help="Contract specifications JSON file.")
+              help="Contract specifications file (.json or .qocc DSL).")
 def contract_check(bundle: str, contracts: str) -> None:
     """Evaluate contracts against a Trace Bundle.
 
@@ -33,9 +33,22 @@ def contract_check(bundle: str, contracts: str) -> None:
     console.print(f"  Bundle:    {bundle}")
     console.print(f"  Contracts: {contracts}")
 
-    # Validate contracts JSON against schema
-    from qocc.cli.validation import validate_json_file
-    validate_json_file(contracts, "contracts")
+    # Validate contracts file
+    from pathlib import Path
+
+    cp = Path(contracts)
+    if cp.suffix.lower() == ".qocc":
+        from qocc.contracts.dsl import ContractDSLParseError, parse_contract_dsl
+
+        try:
+            parse_contract_dsl(cp.read_text(encoding="utf-8"))
+        except ContractDSLParseError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            sys.exit(1)
+    else:
+        from qocc.cli.validation import validate_json_file
+
+        validate_json_file(contracts, "contracts")
 
     try:
         results = check_contract(bundle, contracts)

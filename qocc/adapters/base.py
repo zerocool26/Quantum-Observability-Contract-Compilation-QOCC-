@@ -235,7 +235,7 @@ def get_adapter(name: str) -> BaseAdapter:
     Resolution order:
     1. Explicit ``register_adapter()`` calls.
     2. ``qocc.adapters`` entry-point group (auto-discovered once).
-    3. Built-in lazy imports for ``"qiskit"`` and ``"cirq"``.
+    3. Built-in lazy imports for ``"qiskit"``, ``"cirq"``, ``"tket"``, and ``"stim"``.
     """
     if name not in _REGISTRY:
         # Try entry-point discovery
@@ -249,5 +249,11 @@ def get_adapter(name: str) -> BaseAdapter:
         elif name == "cirq":
             from qocc.adapters.cirq_adapter import CirqAdapter  # noqa: F811
             return CirqAdapter()
+        elif name == "tket":
+            from qocc.adapters.tket_adapter import TketAdapter  # noqa: F811
+            return TketAdapter()
+        elif name == "stim":
+            from qocc.adapters.stim_adapter import StimAdapter  # noqa: F811
+            return StimAdapter()
         raise KeyError(f"No adapter registered for {name!r}. Available: {list(_REGISTRY)}")
     return _REGISTRY[name]()

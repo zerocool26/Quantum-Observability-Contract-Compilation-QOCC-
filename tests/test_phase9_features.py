@@ -25,6 +25,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from click.testing import CliRunner
 
 
 # ======================================================================
@@ -438,3 +439,66 @@ class TestSearchSpaceRng:
         )
         candidates = generate_candidates(config)
         assert len(candidates) >= 2
+
+
+# ======================================================================
+# 13. Replay CLI status output
+# ======================================================================
+
+class TestReplayCLIStatusOutput:
+    """trace replay should show explicit hash verification statuses."""
+
+    def test_replay_cli_shows_unknown_status(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from qocc.cli.commands_trace import trace_replay
+        from qocc.core.replay import ReplayResult
+
+        bundle = tmp_path / "bundle.zip"
+        bundle.write_text("dummy", encoding="utf-8")
+
+        def _fake_replay_bundle(*_: object, **__: object) -> ReplayResult:
+            return ReplayResult(
+                original_run_id="run-1",
+                replay_bundle="replayed.zip",
+                input_hash_match=True,
+                compiled_hash_match=False,
+                metrics_match=True,
+                input_hash_status="matched",
+                compiled_hash_status="unknown",
+                diff={"_verification": {"compiled_hash": "unknown"}},
+            )
+
+        monkeypatch.setattr("qocc.core.replay.replay_bundle", _fake_replay_bundle)
+
+        runner = CliRunner()
+        result = runner.invoke(trace_replay, [str(bundle)])
+        assert result.exit_code == 0
+        assert "Input hash status:    matched" in result.output
+        assert "Compiled hash status: unknown" in result.output
+
+    def test_replay_cli_shows_matched_statuses(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from qocc.cli.commands_trace import trace_replay
+        from qocc.core.replay import ReplayResult
+
+        bundle = tmp_path / "bundle.zip"
+        bundle.write_text("dummy", encoding="utf-8")
+
+        def _fake_replay_bundle(*_: object, **__: object) -> ReplayResult:
+            return ReplayResult(
+                original_run_id="run-2",
+                replay_bundle="replayed.zip",
+                input_hash_match=True,
+                compiled_hash_match=True,
+                metrics_match=True,
+                input_hash_status="matched",
+                compiled_hash_status="matched",
+                diff={},
+            )
+
+        monkeypatch.setattr("qocc.core.replay.replay_bundle", _fake_replay_bundle)
+
+        runner = CliRunner()
+        result = runner.invoke(trace_replay, [str(bundle)])
+        assert result.exit_code == 0
+        assert "BIT-EXACT match" in result.output
+        assert "Input hash status:    matched" in result.output
+        assert "Compiled hash status: matched" in result.output

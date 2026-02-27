@@ -44,6 +44,7 @@ class SearchSpaceConfig:
     seeds: list[int] = field(default_factory=lambda: [DEFAULT_SEED])
     routing_methods: list[str] = field(default_factory=lambda: ["stochastic", "sabre"])
     extra_params: dict[str, list[Any]] = field(default_factory=dict)
+    noise_model: dict[str, Any] | None = None
     strategy: str = "grid"
     max_candidates: int = 50
     bayesian_init_points: int = 5
@@ -56,6 +57,7 @@ class SearchSpaceConfig:
             "seeds": self.seeds,
             "routing_methods": self.routing_methods,
             "extra_params": self.extra_params,
+            "noise_model": self.noise_model,
             "strategy": self.strategy,
             "max_candidates": self.max_candidates,
             "bayesian_init_points": self.bayesian_init_points,
@@ -70,6 +72,7 @@ class SearchSpaceConfig:
             seeds=d.get("seeds", [DEFAULT_SEED]),
             routing_methods=d.get("routing_methods", ["stochastic", "sabre"]),
             extra_params=d.get("extra_params", {}),
+            noise_model=d.get("noise_model"),
             strategy=d.get("strategy", "grid"),
             max_candidates=d.get("max_candidates", 50),
             bayesian_init_points=d.get("bayesian_init_points", 5),

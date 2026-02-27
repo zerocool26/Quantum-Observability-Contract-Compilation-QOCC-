@@ -19,7 +19,8 @@
           "distribution",
           "clifford",
           "exact",
-          "cost"
+          "cost",
+          "qec"
         ]
       },
       "spec": {

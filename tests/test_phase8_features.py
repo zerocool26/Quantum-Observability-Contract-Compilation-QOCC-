@@ -293,6 +293,8 @@ class TestReplayModule:
         d = r.to_dict()
         assert d["original_run_id"] == "abc"
         assert d["input_hash_match"] is True
+        assert d["verification_summary"]["input_hash"]["status"] == "unknown"
+        assert d["verification_summary"]["bit_exact"] is True
 
     def test_replay_result_not_bit_exact(self) -> None:
         from qocc.core.replay import ReplayResult
@@ -304,6 +306,7 @@ class TestReplayModule:
             metrics_match=True,
         )
         assert r.bit_exact is False
+        assert r.verification_summary["bit_exact"] is False
 
     def test_replay_missing_circuit_returns_error(self, tmp_path: Path) -> None:
         """Replaying a bundle with no circuits should return an error diff."""
@@ -373,6 +376,10 @@ class TestReplayModule:
         assert result.compiled_hash_match is False
         assert result.bit_exact is False
         assert result.diff.get("_verification", {}).get("compiled_hash") == "unknown"
+        summary = result.to_dict()["verification_summary"]
+        assert summary["compiled_hash"]["status"] == "unknown"
+        assert summary["compiled_hash"]["matched"] is False
+        assert summary["bit_exact"] is False
 
 
 # ======================================================================

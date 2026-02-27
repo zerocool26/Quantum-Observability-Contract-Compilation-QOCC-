@@ -29,25 +29,27 @@ dependencies = [
 [project.optional-dependencies]
 qiskit = ["qiskit>=1.0"]
 cirq = ["cirq-core>=1.3"]
+tket = ["pytket>=1.30"]
+stim = ["stim>=1.12", "pymatching>=2.0"]
 qec = ["stim>=1.12", "pymatching>=2.0"]
+jupyter = ["ipywidgets>=8.0", "plotly>=5.20"]
 dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",
     "ruff>=0.4",
     "mypy>=1.8",
 ]
-all = ["qocc[qiskit,cirq,dev]"]
+all = ["qocc[qiskit,cirq,tket,stim,jupyter,dev]"]
 
 [project.scripts]
 qocc = "qocc.cli.main:cli"
 
 [project.entry-points."qocc.adapters"]
-# Third-party adapters register here, e.g.:
-# my_adapter = "my_package.adapter:MyAdapter"
+tket = "qocc.adapters.tket_adapter:TketAdapter"
+stim = "qocc.adapters.stim_adapter:StimAdapter"
 
 [project.entry-points."qocc.evaluators"]
-# Third-party contract evaluators register here, e.g.:
-# my_eval = "my_package.evaluator:my_evaluator_fn"
+qec = "qocc.contracts.eval_qec:evaluate_qec_contract"
 
 [project.urls]
 Repository = "https://github.com/zerocool26/Quantum-Observability-Contract-Compilation-QOCC-"

@@ -161,8 +161,11 @@ class TestNewSchemas:
         assert errors == []
 
     def test_total_schema_count(self):
-        """Should have 11 schemas total now."""
-        assert len(SCHEMAS) == 11
+        """Schema registry should include core and optional QEC schemas."""
+        assert len(SCHEMAS) >= 11
+        assert "dem" in SCHEMAS
+        assert "logical_error_rates" in SCHEMAS
+        assert "decoder_stats" in SCHEMAS
 
 
 # ======================================================================
@@ -642,7 +645,7 @@ class TestStatevectorMetadata:
 
 
 class TestExportSchemas:
-    """Test that export_schemas writes all 11 schema files."""
+    """Test that export_schemas writes all registered schema files."""
 
     def test_export_all_schemas(self, tmp_path: Path):
         from qocc.core.schemas import export_schemas
@@ -654,4 +657,8 @@ class TestExportSchemas:
         assert "nondeterminism" in names
         assert "search_rankings" in names
         assert "search_result" in names
-        assert len(files) == 11
+        assert "dem" in names
+        assert "logical_error_rates" in names
+        assert "decoder_stats" in names
+        assert len(files) == len(names)
+        assert len(files) >= 11

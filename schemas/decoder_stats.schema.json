@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QOCC Decoder Stats",
+  "type": "object",
+  "properties": {
+    "decoder_rounds": {
+      "type": "integer"
+    },
+    "matching_graph_edges": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "matching_graph_nodes": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "logical_errors": {
+      "type": "integer"
+    },
+    "code_distance": {
+      "type": [
+        "integer",
+        "number"
+      ]
+    },
+    "mean_syndrome_weight": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "syndrome_weight_distribution": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "integer",
+          "number"
+        ]
+      }
+    }
+  },
+  "additionalProperties": true
+}

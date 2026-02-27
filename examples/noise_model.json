@@ -1,0 +1,7 @@
+{
+  "single_qubit_error": 0.001,
+  "two_qubit_error": 0.01,
+  "readout_error": 0.02,
+  "t1": 100000,
+  "t2": 80000
+}

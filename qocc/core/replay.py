@@ -48,6 +48,7 @@ class ReplayResult:
             "metrics_match": self.metrics_match,
             "input_hash_status": self.input_hash_status,
             "compiled_hash_status": self.compiled_hash_status,
+            "verification_summary": self.verification_summary,
             "original_hash": self.original_hash,
             "replay_hash": self.replay_hash,
             "diff": self.diff,
@@ -56,6 +57,24 @@ class ReplayResult:
     @property
     def bit_exact(self) -> bool:
         return self.input_hash_match and self.compiled_hash_match and self.metrics_match
+
+    @property
+    def verification_summary(self) -> dict[str, Any]:
+        """Machine-readable replay verification summary."""
+        return {
+            "input_hash": {
+                "status": self.input_hash_status,
+                "matched": self.input_hash_match,
+            },
+            "compiled_hash": {
+                "status": self.compiled_hash_status,
+                "matched": self.compiled_hash_match,
+            },
+            "metrics": {
+                "matched": self.metrics_match,
+            },
+            "bit_exact": self.bit_exact,
+        }
 
 
 def replay_bundle(
