@@ -47,6 +47,30 @@
         "number",
         "null"
       ]
+    },
+    "mitigation": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "mitigation_shot_multiplier": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "mitigation_runtime_multiplier": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "mitigation_overhead_factor": {
+      "type": [
+        "number",
+        "null"
+      ]
     }
   },
   "additionalProperties": true

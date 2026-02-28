@@ -134,27 +134,62 @@ class PipelineSpec:
     optimization_level: int = 1
     passes: list[str] = field(default_factory=list)
     parameters: dict[str, Any] = field(default_factory=dict)
+    mitigation: MitigationSpec | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "adapter": self.adapter,
             "optimization_level": self.optimization_level,
             "passes": self.passes,
             "parameters": self.parameters,
         }
+        if self.mitigation is not None:
+            payload["mitigation"] = self.mitigation.to_dict()
+        return payload
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> PipelineSpec:
+        mitigation_payload = d.get("mitigation")
+        mitigation: MitigationSpec | None = None
+        if isinstance(mitigation_payload, dict):
+            mitigation = MitigationSpec.from_dict(mitigation_payload)
         return cls(
             adapter=d["adapter"],
             optimization_level=d.get("optimization_level", 1),
             passes=d.get("passes", []),
             parameters=d.get("parameters", {}),
+            mitigation=mitigation,
         )
 
     def stable_hash(self) -> str:
         payload = json.dumps(self.to_dict(), sort_keys=True).encode()
         return hashlib.sha256(payload).hexdigest()
+
+
+@dataclass
+class MitigationSpec:
+    """Error mitigation configuration for an optional pipeline stage."""
+
+    method: str
+    params: dict[str, Any] = field(default_factory=dict)
+    overhead_budget: dict[str, float] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "method": self.method,
+            "params": dict(self.params),
+            "overhead_budget": dict(self.overhead_budget),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "MitigationSpec":
+        if "method" not in data:
+            raise ValueError("MitigationSpec requires 'method'")
+        return cls(
+            method=str(data["method"]),
+            params=dict(data.get("params", {}) or {}),
+            overhead_budget=dict(data.get("overhead_budget", {}) or {}),
+        )
 
 
 @dataclass

@@ -20,7 +20,8 @@
           "clifford",
           "exact",
           "cost",
-          "qec"
+          "qec",
+          "zne"
         ]
       },
       "spec": {

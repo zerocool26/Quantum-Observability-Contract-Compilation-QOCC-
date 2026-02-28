@@ -24,6 +24,7 @@ class ContractType(str, Enum):
     EXACT = "exact"
     COST = "cost"
     QEC = "qec"
+    ZNE = "zne"
 
     @classmethod
     def is_valid(cls, value: str) -> bool:

@@ -491,7 +491,7 @@ from qocc.contracts.spec import ContractType, ContractSpec, VALID_CONTRACT_TYPES
 
 class TestContractType:
     def test_valid_types(self):
-        for t in ["observable", "distribution", "clifford", "exact", "cost", "qec"]:
+        for t in ["observable", "distribution", "clifford", "exact", "cost", "qec", "zne"]:
             assert ContractType.is_valid(t)
 
     def test_invalid_type(self):
@@ -504,7 +504,7 @@ class TestContractType:
 
     def test_valid_contract_types_frozenset(self):
         assert isinstance(VALID_CONTRACT_TYPES, frozenset)
-        assert len(VALID_CONTRACT_TYPES) == 6
+        assert len(VALID_CONTRACT_TYPES) == 7
 
     def test_spec_type_valid_flag(self):
         spec = ContractSpec(name="ok", type="observable")

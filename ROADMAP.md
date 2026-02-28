@@ -96,6 +96,9 @@
 - [x] Asynchronous hardware job tracking (`qocc trace watch` with timeout and on-complete hook)
 - [x] Evolutionary search strategy (`--strategy evolutionary` with per-generation spans)
 - [x] Bayesian transfer-learning prior (`search_history.json`, half-life weighting)
+- [x] Multi-circuit batch search (`qocc compile batch`, `batch_search_compile()`)
+- [x] Zero-noise extrapolation contract (`ContractType.ZNE`)
+- [x] Error mitigation pipeline stage (`MitigationSpec`, mitigation span, overhead telemetry)
 
 ### Advanced features:
 - [ ] GPU simulation backend integration

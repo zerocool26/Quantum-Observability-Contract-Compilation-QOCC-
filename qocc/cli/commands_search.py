@@ -162,3 +162,54 @@ def compile_search(
 
     console.print(f"\n  Bundle: {result.get('bundle_zip', result.get('bundle_dir'))}")
     console.print(f"  Reason: {result['selection_reason']}")
+
+
+@compile_group.command("batch")
+@click.option("--manifest", "manifest_path", type=click.Path(exists=True), required=True,
+              help="Batch manifest JSON listing circuits and per-circuit options.")
+@click.option("--workers", type=int, default=None,
+              help="Optional parallel worker count across circuits.")
+@click.option("--out", "-o", "output", type=click.Path(), default=None,
+              help="Output batch bundle path.")
+def compile_batch(
+    manifest_path: str,
+    workers: int | None,
+    output: str | None,
+) -> None:
+    """Run batch compilation search across multiple circuits from a manifest."""
+    from qocc.api import batch_search_compile
+
+    console.print("[bold blue]QOCC Batch Compilation Search[/bold blue]")
+    console.print(f"  Manifest: {manifest_path}")
+    if workers is not None:
+        console.print(f"  Workers: {workers}")
+
+    try:
+        result = batch_search_compile(
+            manifest=manifest_path,
+            output=output,
+            workers=workers,
+        )
+    except Exception as exc:
+        console.print(f"[red]Batch search failed: {exc}[/red]")
+        sys.exit(1)
+
+    rows = result.get("cross_circuit_metrics", {}).get("rows", [])
+    table = Table(title="Batch Results")
+    table.add_column("Circuit")
+    table.add_column("Status")
+    table.add_column("Candidates", justify="right")
+    table.add_column("Validated", justify="right")
+    table.add_column("Feasible")
+
+    for row in rows:
+        table.add_row(
+            str(row.get("id", "?")),
+            str(row.get("status", "?")),
+            str(row.get("num_candidates", "—")),
+            str(row.get("num_validated", "—")),
+            str(row.get("feasible", "—")),
+        )
+
+    console.print(table)
+    console.print(f"\n  Batch bundle: {result.get('bundle_zip', result.get('bundle_dir'))}")

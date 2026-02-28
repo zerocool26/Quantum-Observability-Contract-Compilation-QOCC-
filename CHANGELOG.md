@@ -2,6 +2,28 @@
 
 All notable changes to the QOCC project are documented here.
 
+## [Unreleased] — Phase 15 (Error Mitigation Pipeline Stage)
+
+### Added
+- **`MitigationSpec` dataclass** (`qocc.core.circuit_handle`) with
+  serializable `method`, `params`, and `overhead_budget` fields.
+- **Mitigation pipeline stage integration** in `run_trace()` and
+  `search_compile()` candidate compilation flow.
+- **First-class `mitigation` span** with method, parameters, overhead budget,
+  `shot_multiplier`, `runtime_multiplier`, and combined `overhead_factor`.
+- **Mitigation telemetry fields in metrics**:
+  `mitigation`, `mitigation_shot_multiplier`,
+  `mitigation_runtime_multiplier`, `mitigation_overhead_factor`.
+- **Phase 15.3 tests** in `tests/test_phase15_mitigation.py`.
+
+### Changed
+- `PipelineSpec` now supports optional top-level `mitigation` config and
+  preserves it through `to_dict()`/`from_dict()` round-trips.
+- Metrics schema definitions now include mitigation overhead keys.
+
+### Validation
+- Full test suite: **454 passed, 5 skipped, 3 warnings**.
+
 ## [Unreleased] — Phase 10 (Backend Expansion, Part 1)
 
 ### Added
@@ -295,6 +317,40 @@ All notable changes to the QOCC project are documented here.
 - `search_compile()` now runs an adaptive Bayesian loop with observation
   persistence across rounds and runs.
 - `BayesianSearchOptimizer` now uses weighted observations in UCB estimation.
+
+## [Unreleased] — Phase 12 (Multi-Circuit Batch Search)
+
+### Added
+- **Batch API**: `qocc.api.batch_search_compile(manifest, output, workers)` for
+  manifest-driven multi-circuit search runs.
+- **CLI command**: `qocc compile batch --manifest ... [--workers N] [--out ...]`.
+- **Batch bundle outputs**:
+  - `batch_results.json` (per-circuit result objects)
+  - `cross_circuit_metrics.json` (cross-circuit rows + aggregate summary)
+- **Top-level batch trace span**: `batch_search` with required attributes:
+  `n_circuits`, `n_cache_hits`, `total_candidates_evaluated`.
+- **Phase 12.4 tests**: `tests/test_phase12_batch.py`.
+
+### Changed
+- `search_compile()` return payload now includes `cache_hits` and `cache_misses`
+  for upstream aggregation in batch mode.
+
+## [Unreleased] — Phase 15 (Zero-Noise Extrapolation Contract)
+
+### Added
+- **New contract type**: `ContractType.ZNE` (`"zne"`).
+- **ZNE evaluator module**: `qocc.contracts.eval_zne.evaluate_zne_contract`
+  implementing Richardson extrapolation to noise scale 0.
+- ZNE result details include:
+  - `per_level` (noise scale and expectation values)
+  - `extrapolation_coefficients`
+  - `extrapolated_value`, `ideal_value`, `abs_error`, `tolerance`.
+- **Search-time ZNE tracing**: one span per noise level (`zne/noise_level`).
+- **Phase 15.2 tests**: `tests/test_phase15_zne_contract.py`.
+
+### Changed
+- `check_contract()` and `search_compile()` now dispatch `type="zne"` contracts.
+- `schemas/contracts.schema.json` now accepts `"zne"` in contract type enum.
 
 ## [Unreleased] — Phase 9 (Correctness, Performance & Hygiene)
 

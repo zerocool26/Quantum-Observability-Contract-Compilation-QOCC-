@@ -5,6 +5,7 @@ Provides the primary entrypoints:
   - ``compare_bundles(...)`` → CompareReport
   - ``check_contract(...)`` → ContractResult
   - ``search_compile(...)`` → SearchResult (v3)
+    - ``batch_search_compile(...)`` → BatchSearchResult
 """
 
 from __future__ import annotations
@@ -25,11 +26,118 @@ from qocc import DEFAULT_RNG_ALGORITHM, DEFAULT_SEED
 from qocc.adapters.base import get_adapter
 from qocc.core.artifacts import ArtifactStore
 from qocc.core.cache import CompilationCache
-from qocc.core.circuit_handle import PipelineSpec
+from qocc.core.circuit_handle import MitigationSpec, PipelineSpec
 from qocc.core.hashing import hash_dict, hash_string
 from qocc.trace.emitter import TraceEmitter
 
 logger = logging.getLogger("qocc")
+
+
+_SUPPORTED_MITIGATION_METHODS: set[str] = {"twirling", "pec", "zne", "m3_readout"}
+_ADAPTER_DEFAULT_MITIGATION_METHODS: dict[str, set[str]] = {
+    "qiskit": {"twirling", "zne", "m3_readout"},
+    "ibm": {"twirling", "pec", "zne", "m3_readout"},
+    "cirq": {"twirling", "zne"},
+    "tket": {"twirling", "zne"},
+    "stim": {"zne"},
+}
+
+
+def _supported_mitigation_methods(adapter: Any, adapter_name: str) -> set[str]:
+    methods = _ADAPTER_DEFAULT_MITIGATION_METHODS.get(adapter_name.lower(), {"zne"})
+    try:
+        backend = adapter.describe_backend()
+        extra = backend.extra if isinstance(getattr(backend, "extra", None), dict) else {}
+        override = extra.get("supported_mitigation_methods")
+        if isinstance(override, list):
+            parsed = {str(x).strip().lower() for x in override if str(x).strip()}
+            parsed = {x for x in parsed if x in _SUPPORTED_MITIGATION_METHODS}
+            if parsed:
+                return parsed
+    except Exception:
+        pass
+    return methods
+
+
+def _parse_mitigation_spec(raw: Any) -> MitigationSpec | None:
+    if raw is None:
+        return None
+    if isinstance(raw, MitigationSpec):
+        return raw
+    if isinstance(raw, dict):
+        return MitigationSpec.from_dict(raw)
+    raise ValueError("Mitigation config must be a dict or MitigationSpec")
+
+
+def _mitigation_overhead(spec: MitigationSpec) -> tuple[float, float, float]:
+    params = spec.params if isinstance(spec.params, dict) else {}
+    budget = spec.overhead_budget if isinstance(spec.overhead_budget, dict) else {}
+
+    shot_multiplier = params.get("shot_multiplier", budget.get("max_shot_multiplier", 1.0))
+    runtime_multiplier = params.get("runtime_multiplier", budget.get("max_runtime_multiplier", 1.0))
+
+    try:
+        shot_multiplier = float(shot_multiplier)
+    except Exception:
+        shot_multiplier = 1.0
+    try:
+        runtime_multiplier = float(runtime_multiplier)
+    except Exception:
+        runtime_multiplier = 1.0
+
+    shot_multiplier = max(1.0, shot_multiplier)
+    runtime_multiplier = max(1.0, runtime_multiplier)
+    overhead_factor = shot_multiplier * runtime_multiplier
+    return shot_multiplier, runtime_multiplier, overhead_factor
+
+
+def _apply_mitigation_stage(
+    emitter: TraceEmitter,
+    adapter: Any,
+    adapter_name: str,
+    mitigation: MitigationSpec | None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if mitigation is None:
+        return None
+
+    method = str(mitigation.method).strip().lower()
+    if method not in _SUPPORTED_MITIGATION_METHODS:
+        raise ValueError(
+            f"Unsupported mitigation method {mitigation.method!r}. "
+            f"Supported methods: {sorted(_SUPPORTED_MITIGATION_METHODS)}"
+        )
+
+    supported = _supported_mitigation_methods(adapter, adapter_name)
+    if method not in supported:
+        raise ValueError(
+            f"Mitigation method {method!r} not supported by adapter {adapter_name!r}. "
+            f"Adapter supports: {sorted(supported)}"
+        )
+
+    shot_multiplier, runtime_multiplier, overhead_factor = _mitigation_overhead(mitigation)
+    attrs: dict[str, Any] = {
+        "method": method,
+        "params": mitigation.params,
+        "overhead_budget": mitigation.overhead_budget,
+        "shot_multiplier": shot_multiplier,
+        "runtime_multiplier": runtime_multiplier,
+        "overhead_factor": overhead_factor,
+    }
+    if context:
+        attrs.update(context)
+
+    with emitter.span("mitigation", attributes=attrs):
+        pass
+
+    return {
+        "method": method,
+        "params": dict(mitigation.params),
+        "overhead_budget": dict(mitigation.overhead_budget),
+        "shot_multiplier": shot_multiplier,
+        "runtime_multiplier": runtime_multiplier,
+        "overhead_factor": overhead_factor,
+    }
 
 
 def run_trace(
@@ -103,6 +211,12 @@ def run_trace(
     # Inject seed from seeds dict into pipeline parameters
     if "seed" not in pipeline_spec.parameters:
         pipeline_spec.parameters["seed"] = _seed_value
+
+    mitigation_spec = pipeline_spec.mitigation
+    if mitigation_spec is None:
+        mitigation_spec = _parse_mitigation_spec(pipeline_spec.parameters.get("mitigation"))
+        if mitigation_spec is not None:
+            pipeline_spec.mitigation = mitigation_spec
 
     adapter = get_adapter(adapter_name)
 
@@ -184,19 +298,37 @@ def run_trace(
         span.set_attribute("compiled_hash", compiled.stable_hash()[:16])
         span.set_attribute("pass_count", len(compile_result.pass_log))
 
-    # 5. Store compiled circuit
+    # 5. Optional mitigation stage
+    mitigation_applied: dict[str, Any] | None = None
+    if mitigation_spec is not None:
+        mitigation_applied = _apply_mitigation_stage(
+            emitter,
+            adapter,
+            adapter_name,
+            mitigation_spec,
+        )
+
+    # 6. Store compiled circuit
     with emitter.span("store_compiled") as span:
         if compiled.qasm3:
             store.write_circuit("selected.qasm", compiled.qasm3)
 
-    # 6. Compute metrics
+    # 7. Compute metrics
     with emitter.span("compute_metrics") as span:
         metrics_before = adapter.get_metrics(normalized)
-        metrics_after = adapter.get_metrics(compiled)
+        metrics_after_data = adapter.get_metrics(compiled).to_dict()
+        if mitigation_applied is not None:
+            metrics_after_data["mitigation"] = mitigation_applied
+            metrics_after_data["mitigation_shot_multiplier"] = mitigation_applied["shot_multiplier"]
+            metrics_after_data["mitigation_runtime_multiplier"] = mitigation_applied["runtime_multiplier"]
+            metrics_after_data["mitigation_overhead_factor"] = mitigation_applied["overhead_factor"]
+        from qocc.adapters.base import MetricsSnapshot
+
+        metrics_after = MetricsSnapshot(metrics_after_data)
         span.set_attribute("metrics_before", metrics_before.to_dict())
         span.set_attribute("metrics_after", metrics_after.to_dict())
 
-    # 7. Nondeterminism detection (if repeat >= 2)
+    # 8. Nondeterminism detection (if repeat >= 2)
     nondet_report: dict[str, Any] | None = None
     if repeat >= 2:
         from qocc.core.nondeterminism import detect_nondeterminism
@@ -216,7 +348,7 @@ def run_trace(
                     hash_counts=nd.hash_counts,
                 )
 
-    # 8. Write bundle files
+    # 9. Write bundle files
     with emitter.span("write_bundle") as span:
         store.write_manifest(run_id, extra={
             "adapter": adapter_name,
@@ -256,7 +388,7 @@ def run_trace(
         )
         store.write_summary_report(summary)
 
-    # 9. Zip
+    # 10. Zip
     with emitter.span("export_zip") as span:
         final_zip = store.export_zip(zip_path)
         span.set_attribute("zip_path", str(final_zip))
@@ -676,6 +808,8 @@ def check_contract(
             compiled_handle=compiled_handle,
             sim_counts_input=sim_counts_input,
             sim_counts_compiled=sim_counts_compiled,
+            simulation_shots=simulation_shots,
+            simulation_seed=simulation_seed,
         )
 
         evaluated_dict = evaluated.to_dict()
@@ -806,6 +940,8 @@ def _evaluate_check_contract_leaf(
     compiled_handle: Any,
     sim_counts_input: dict[str, int] | None,
     sim_counts_compiled: dict[str, int] | None,
+    simulation_shots: int,
+    simulation_seed: int,
 ) -> Any:
     """Evaluate one leaf contract for check_contract()."""
     from qocc.contracts.eval_sampling import (
@@ -816,6 +952,7 @@ def _evaluate_check_contract_leaf(
     from qocc.contracts.eval_exact import evaluate_exact_equivalence
     from qocc.contracts.eval_clifford import evaluate_clifford_contract
     from qocc.contracts.eval_qec import evaluate_qec_contract
+    from qocc.contracts.eval_zne import evaluate_zne_contract
     from qocc.contracts.registry import get_evaluator
     from qocc.contracts.spec import ContractResult
 
@@ -919,6 +1056,55 @@ def _evaluate_check_contract_leaf(
                 "decoder_stats": bundle.get("decoder_stats"),
             },
         )
+
+    if spec.type == "zne":
+        if adapter is None or input_handle is None or compiled_handle is None:
+            return ContractResult(
+                name=spec.name,
+                passed=False,
+                details={"type": "zne", "error": "Adapter and circuit handles are required for ZNE evaluation."},
+            )
+
+        from qocc.adapters.base import SimulationSpec as SS
+
+        try:
+            if sim_counts_input:
+                base_vals = _counts_to_observable_values(sim_counts_input)
+            else:
+                baseline = adapter.simulate(input_handle, SS(shots=simulation_shots, seed=simulation_seed))
+                base_vals = _counts_to_observable_values(baseline.counts)
+            ideal_value = float(sum(base_vals) / max(1, len(base_vals)))
+        except Exception as exc:
+            return ContractResult(
+                name=spec.name,
+                passed=False,
+                details={"type": "zne", "error": f"Failed to compute ideal baseline expectation: {exc}"},
+            )
+
+        factors = spec.spec.get("noise_scale_factors", [1.0, 1.5, 2.0, 2.5])
+        try:
+            factors = [float(f) for f in factors]
+        except Exception:
+            factors = [1.0, 1.5, 2.0, 2.5]
+
+        per_level: list[dict[str, Any]] = []
+        for factor in factors:
+            try:
+                sim = adapter.simulate(
+                    compiled_handle,
+                    SS(shots=simulation_shots, seed=simulation_seed, noise_scale=factor),
+                )
+                vals = _counts_to_observable_values(sim.counts)
+                exp = float(sum(vals) / max(1, len(vals)))
+                per_level.append({"scale": factor, "expectation": exp, "shots": sim.shots})
+            except Exception as exc:
+                return ContractResult(
+                    name=spec.name,
+                    passed=False,
+                    details={"type": "zne", "error": f"Simulation failed at noise scale {factor}: {exc}", "per_level": per_level},
+                )
+
+        return evaluate_zne_contract(spec, ideal_value=ideal_value, scaled_expectations=per_level)
 
     return ContractResult(
         name=spec.name,
@@ -1206,8 +1392,29 @@ def search_compile(
                 )
 
             compiled = result.circuit
+            mitigation_raw = candidate.pipeline.parameters.get("mitigation")
+            mitigation_spec = candidate.pipeline.mitigation or _parse_mitigation_spec(mitigation_raw)
+            if mitigation_spec is not None:
+                candidate.pipeline.mitigation = mitigation_spec
+
+            mitigation_applied: dict[str, Any] | None = None
+            if mitigation_spec is not None:
+                mitigation_applied = _apply_mitigation_stage(
+                    emitter,
+                    adapter,
+                    adapter_name,
+                    mitigation_spec,
+                    context={"candidate_id": candidate.candidate_id},
+                )
+
             m = adapter.get_metrics(compiled)
-            candidate.metrics = m.to_dict()
+            metrics_data = m.to_dict()
+            if mitigation_applied is not None:
+                metrics_data["mitigation"] = mitigation_applied
+                metrics_data["mitigation_shot_multiplier"] = mitigation_applied["shot_multiplier"]
+                metrics_data["mitigation_runtime_multiplier"] = mitigation_applied["runtime_multiplier"]
+                metrics_data["mitigation_overhead_factor"] = mitigation_applied["overhead_factor"]
+            candidate.metrics = metrics_data
             cand_span.set_attribute("cache_hit", local_cache_entries[-1]["hit"] if local_cache_entries else False)
             emitter.finish_span(cand_span, status="OK")
             return candidate, compiled, local_cache_entries
@@ -1406,6 +1613,7 @@ def search_compile(
             from qocc.contracts.eval_exact import evaluate_exact_equivalence
             from qocc.contracts.eval_clifford import evaluate_clifford_contract
             from qocc.contracts.eval_qec import evaluate_qec_contract
+            from qocc.contracts.eval_zne import evaluate_zne_contract
             from qocc.contracts.parametric import resolve_contract_spec, ParametricResolutionError
             from qocc.contracts.spec import ContractResult
             from qocc.contracts.registry import get_evaluator
@@ -1578,6 +1786,67 @@ def search_compile(
                             compiled_metrics=candidate.metrics,
                             simulation_metadata=sim_meta,
                         )
+                    if spec_eval.type == "zne":
+                        baseline_counts_local = baseline_counts
+                        if baseline_counts_local is None:
+                            try:
+                                baseline_counts_local = adapter.simulate(normalized, sim_spec).counts
+                            except Exception:
+                                baseline_counts_local = None
+
+                        if baseline_counts_local is None:
+                            result_obj = ContractResult(
+                                name=spec_eval.name,
+                                passed=False,
+                                details={"type": "zne", "error": "No baseline counts available for ZNE evaluation."},
+                            )
+                        else:
+                            base_vals = _counts_to_observable_values(baseline_counts_local)
+                            ideal_value = float(sum(base_vals) / max(1, len(base_vals)))
+                            factors = spec_eval.spec.get("noise_scale_factors", [1.0, 1.5, 2.0, 2.5])
+                            try:
+                                factors = [float(f) for f in factors]
+                            except Exception:
+                                factors = [1.0, 1.5, 2.0, 2.5]
+
+                            per_level: list[dict[str, Any]] = []
+                            failed: str | None = None
+                            for factor in factors:
+                                with emitter.span(
+                                    "zne/noise_level",
+                                    attributes={
+                                        "candidate_id": candidate.candidate_id,
+                                        "scale_factor": factor,
+                                    },
+                                ):
+                                    try:
+                                        factor_spec = SimulationSpec(
+                                            shots=simulation_shots,
+                                            seed=simulation_seed,
+                                            noise_scale=factor,
+                                        )
+                                        sim = adapter.simulate(compiled_handle, factor_spec)
+                                        vals = _counts_to_observable_values(sim.counts)
+                                        exp = float(sum(vals) / max(1, len(vals)))
+                                        per_level.append(
+                                            {"scale": factor, "expectation": exp, "shots": sim.shots}
+                                        )
+                                    except Exception as exc:
+                                        failed = f"Simulation failed at noise scale {factor}: {exc}"
+                                        break
+
+                            if failed is not None:
+                                result_obj = ContractResult(
+                                    name=spec_eval.name,
+                                    passed=False,
+                                    details={"type": "zne", "error": failed, "per_level": per_level},
+                                )
+                            else:
+                                result_obj = evaluate_zne_contract(
+                                    spec_eval,
+                                    ideal_value=ideal_value,
+                                    scaled_expectations=per_level,
+                                )
                     if "result_obj" not in locals():
                         result_obj = ContractResult(
                             name=spec_eval.name,
@@ -1707,11 +1976,248 @@ def search_compile(
         "bundle_zip": str(zip_path),
         "num_candidates": len(candidates),
         "num_validated": len([c for c in validated if c.validated]),
+        "cache_hits": len([e for e in cache_index if e.get("hit") is True]),
+        "cache_misses": len([e for e in cache_index if e.get("hit") is False]),
         "feasible": selection.feasible,
         "selected": selection.selected.to_dict() if selection.selected else None,
         "selection_reason": selection.reason,
         "top_rankings": [c.to_dict() for c in ranked[:top_k]],
     }
+
+
+def batch_search_compile(
+    manifest: str | dict[str, Any],
+    output: str | None = None,
+    workers: int | None = None,
+) -> dict[str, Any]:
+    """Run search compilation across multiple circuits from a manifest.
+
+    Manifest shape:
+    {
+      "defaults": {"adapter": "qiskit", "top_k": 5, ...},
+      "circuits": [
+        {
+          "id": "ghz",
+          "input": "examples/ghz.qasm",
+          "adapter": "qiskit",
+          "search_config": {...},
+          "contracts": [...],
+          "top_k": 5,
+          "simulation_shots": 1024,
+          "mode": "single"
+        }
+      ]
+    }
+    """
+    if isinstance(manifest, str):
+        manifest_data = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    else:
+        manifest_data = manifest
+
+    if not isinstance(manifest_data, dict):
+        raise ValueError("batch manifest must be a dict or path to JSON dict")
+
+    circuits_raw = manifest_data.get("circuits", [])
+    if not isinstance(circuits_raw, list) or not circuits_raw:
+        raise ValueError("batch manifest must include a non-empty 'circuits' list")
+
+    defaults = manifest_data.get("defaults", {})
+    if not isinstance(defaults, dict):
+        defaults = {}
+
+    run_id = uuid.uuid4().hex[:12]
+    emitter = TraceEmitter()
+
+    if output:
+        out_path = Path(output)
+        if out_path.suffix == ".zip":
+            bundle_dir = out_path.with_suffix("")
+            zip_path = out_path
+        else:
+            bundle_dir = out_path
+            zip_path = out_path.with_suffix(".zip")
+    else:
+        bundle_dir = Path(tempfile.mkdtemp(prefix="qocc_batch_"))
+        zip_path = bundle_dir.with_suffix(".zip")
+
+    per_circuit_output_dir = bundle_dir / "batch" / "circuit_bundles"
+    per_circuit_output_dir.mkdir(parents=True, exist_ok=True)
+
+    normalized_entries: list[dict[str, Any]] = []
+    for i, entry in enumerate(circuits_raw):
+        if not isinstance(entry, dict):
+            continue
+        entry_id = str(entry.get("id") or entry.get("name") or f"circuit_{i}")
+        input_source = entry.get("input") or entry.get("input_source")
+        if input_source is None:
+            raise ValueError(f"manifest circuit {entry_id!r} missing required 'input'")
+
+        adapter_name = str(entry.get("adapter") or defaults.get("adapter") or "qiskit")
+        search_cfg = entry.get("search_config") if "search_config" in entry else defaults.get("search_config")
+        contracts = entry.get("contracts") if "contracts" in entry else defaults.get("contracts")
+        top_k = int(entry.get("top_k", defaults.get("top_k", 5)))
+        shots = int(entry.get("simulation_shots", defaults.get("simulation_shots", 1024)))
+        seed = int(entry.get("simulation_seed", defaults.get("simulation_seed", DEFAULT_SEED)))
+        mode = str(entry.get("mode", defaults.get("mode", "single")))
+
+        normalized_entries.append(
+            {
+                "id": entry_id,
+                "adapter": adapter_name,
+                "input_source": input_source,
+                "search_config": search_cfg,
+                "contracts": contracts,
+                "top_k": top_k,
+                "simulation_shots": shots,
+                "simulation_seed": seed,
+                "mode": mode,
+            }
+        )
+
+    if workers is None:
+        workers = min(len(normalized_entries), os.cpu_count() or 4, 8)
+    workers = max(1, int(workers))
+
+    def _run_one(item: dict[str, Any]) -> dict[str, Any]:
+        cid = item["id"]
+        out_zip = per_circuit_output_dir / f"{cid}.zip"
+        try:
+            result = search_compile(
+                adapter_name=item["adapter"],
+                input_source=item["input_source"],
+                search_config=item.get("search_config"),
+                contracts=item.get("contracts"),
+                output=str(out_zip),
+                top_k=item["top_k"],
+                simulation_shots=item["simulation_shots"],
+                simulation_seed=item["simulation_seed"],
+                mode=item["mode"],
+            )
+            return {
+                "id": cid,
+                "status": "ok",
+                "adapter": item["adapter"],
+                "input_source": item["input_source"],
+                **result,
+            }
+        except Exception as exc:
+            return {
+                "id": cid,
+                "status": "error",
+                "adapter": item["adapter"],
+                "input_source": item["input_source"],
+                "error": str(exc),
+            }
+
+    results: list[dict[str, Any]] = []
+    with emitter.span(
+        "batch_search",
+        attributes={
+            "n_circuits": len(normalized_entries),
+            "workers": workers,
+        },
+    ) as batch_span:
+        import concurrent.futures
+
+        if len(normalized_entries) > 1 and workers > 1:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [pool.submit(_run_one, e) for e in normalized_entries]
+                for fut in concurrent.futures.as_completed(futures):
+                    results.append(fut.result())
+        else:
+            for e in normalized_entries:
+                results.append(_run_one(e))
+
+        results.sort(key=lambda r: r.get("id", ""))
+        ok_results = [r for r in results if r.get("status") == "ok"]
+        cache_hits = sum(int(r.get("cache_hits", 0) or 0) for r in ok_results)
+        total_candidates = sum(int(r.get("num_candidates", 0) or 0) for r in ok_results)
+        batch_span.set_attribute("n_cache_hits", cache_hits)
+        batch_span.set_attribute("total_candidates_evaluated", total_candidates)
+
+    cross_rows: list[dict[str, Any]] = []
+    for r in results:
+        selected = r.get("selected") or {}
+        selected_metrics = selected.get("metrics") if isinstance(selected, dict) else {}
+        if not isinstance(selected_metrics, dict):
+            selected_metrics = {}
+        cross_rows.append(
+            {
+                "id": r.get("id"),
+                "status": r.get("status"),
+                "adapter": r.get("adapter"),
+                "num_candidates": r.get("num_candidates"),
+                "num_validated": r.get("num_validated"),
+                "feasible": r.get("feasible"),
+                "selected_score": selected.get("surrogate_score") if isinstance(selected, dict) else None,
+                "selected_depth": selected_metrics.get("depth"),
+                "selected_gates_2q": selected_metrics.get("gates_2q"),
+            }
+        )
+
+    aggregate = {
+        "count": len(cross_rows),
+        "ok": len([x for x in cross_rows if x.get("status") == "ok"]),
+        "error": len([x for x in cross_rows if x.get("status") == "error"]),
+        "avg_selected_score": (
+            sum(float(x.get("selected_score", 0.0) or 0.0) for x in cross_rows if x.get("selected_score") is not None)
+            / max(1, len([x for x in cross_rows if x.get("selected_score") is not None]))
+        ),
+    }
+
+    store = ArtifactStore(bundle_dir)
+    store.write_manifest(
+        run_id,
+        extra={
+            "type": "batch_search",
+            "n_circuits": len(normalized_entries),
+            "workers": workers,
+        },
+    )
+    store.write_env()
+    store.write_trace(emitter.to_dicts())
+    store.write_json("batch_results.json", results)
+    store.write_json("cross_circuit_metrics.json", {"rows": cross_rows, "aggregate": aggregate})
+    store.write_summary_report(_generate_batch_summary(run_id, results, aggregate))
+    store.export_zip(zip_path)
+
+    return {
+        "run_id": run_id,
+        "bundle_dir": str(bundle_dir),
+        "bundle_zip": str(zip_path),
+        "n_circuits": len(normalized_entries),
+        "workers": workers,
+        "results": results,
+        "cross_circuit_metrics": {"rows": cross_rows, "aggregate": aggregate},
+    }
+
+
+def _generate_batch_summary(
+    run_id: str,
+    results: list[dict[str, Any]],
+    aggregate: dict[str, Any],
+) -> str:
+    lines = [
+        "# QOCC Batch Search Summary",
+        "",
+        f"**Run ID:** `{run_id}`",
+        f"**Circuits:** {aggregate.get('count', 0)}",
+        f"**Successful:** {aggregate.get('ok', 0)}",
+        f"**Failed:** {aggregate.get('error', 0)}",
+        "",
+        "## Per-Circuit Results",
+        "",
+        "| Circuit | Status | Candidates | Validated | Feasible |",
+        "|--------|--------|------------|-----------|----------|",
+    ]
+
+    for r in results:
+        lines.append(
+            f"| {r.get('id', '?')} | {r.get('status', '?')} | "
+            f"{r.get('num_candidates', '—')} | {r.get('num_validated', '—')} | {r.get('feasible', '—')} |"
+        )
+
+    return "\n".join(lines) + "\n"
 
 
 def _analyze_regression_causes(

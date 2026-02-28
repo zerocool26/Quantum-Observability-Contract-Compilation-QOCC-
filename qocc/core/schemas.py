@@ -75,6 +75,10 @@ METRICS_SCHEMA: dict[str, Any] = {
         "topology_violations": {"type": ["integer", "null"]},
         "duration_estimate": {"type": ["number", "null"]},
         "proxy_error_score": {"type": ["number", "null"]},
+        "mitigation": {"type": ["object", "null"]},
+        "mitigation_shot_multiplier": {"type": ["number", "null"]},
+        "mitigation_runtime_multiplier": {"type": ["number", "null"]},
+        "mitigation_overhead_factor": {"type": ["number", "null"]},
     },
     "additionalProperties": True,
 }

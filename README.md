@@ -15,6 +15,7 @@
 - **Content-addressed caching** — Cache compilation results keyed by circuit hash + pipeline spec + backend version
 - **Plugin system** — Register custom adapters and evaluators via Python entry points
 - **Hardware execution interface** — Optional adapter `execute()` API with structured `ExecutionResult` metadata
+- **Mitigation pipeline stage** — Optional `mitigation` stage with trace spans and overhead telemetry
 
 ## Quick Start
 
@@ -54,6 +55,9 @@ qocc compile search --adapter qiskit --input examples/ghz.qasm --strategy bayesi
 
 # Evolutionary search (tournament + crossover + mutation)
 qocc compile search --adapter qiskit --input examples/ghz.qasm --strategy evolutionary --out search.zip
+
+# Batch search over multiple circuits from a manifest
+qocc compile batch --manifest examples/batch_manifest.json --workers 4 --out batch.zip
 
 # Noise-aware surrogate scoring (provider-agnostic noise model JSON)
 qocc compile search --adapter qiskit --input examples/ghz.qasm --noise-model examples/noise_model.json --out search.zip
@@ -115,6 +119,7 @@ Every stage emits structured spans with per-pass granularity. The resulting Trac
 | `clifford` | Stabilizer tableau | Exact Clifford equivalence (falls back to distribution for non-Clifford) |
 | `exact` | Statevector fidelity | Exact statevector equivalence |
 | `cost` | Resource budget | Depth, 2Q gates, total gates, duration, proxy error within limits |
+| `zne` | Richardson extrapolation | Zero-noise extrapolated observable stays within tolerance of ideal |
 
 ### Contract DSL
 
@@ -218,6 +223,48 @@ artifacts in place:
 ]
 ```
 
+### ZNE Contract
+
+```json
+{
+    "name": "zne_expectation",
+    "type": "zne",
+    "spec": {"noise_scale_factors": [1.0, 1.5, 2.0, 2.5]},
+    "tolerances": {"abs_error": 0.05}
+}
+```
+
+ZNE results include per-noise-level expectations plus Richardson
+extrapolation coefficients in contract details.
+
+### Mitigation Stage
+
+You can add an optional mitigation stage directly in the pipeline spec.
+
+```json
+{
+    "adapter": "qiskit",
+    "optimization_level": 2,
+    "mitigation": {
+        "method": "twirling",
+        "params": {
+            "shot_multiplier": 2.0,
+            "runtime_multiplier": 1.25
+        },
+        "overhead_budget": {
+            "max_runtime_multiplier": 2.0
+        }
+    }
+}
+```
+
+Supported methods are adapter-configurable and include:
+`twirling`, `pec`, `zne`, and `m3_readout`.
+
+When mitigation is enabled, QOCC emits a first-class `mitigation` span and
+records `mitigation_shot_multiplier`, `mitigation_runtime_multiplier`, and
+`mitigation_overhead_factor` in compiled candidate metrics.
+
 ### Early Stopping (SPRT)
 
 Set `resource_budget.early_stopping: true` with `min_shots` and `max_shots` to enable iterative sampling that halts when pass/fail is statistically certain. Uses a two-tier strategy: **SPRT** (Sequential Probability Ratio Test) for guaranteed Type I/II error bounds, with a CI-separation heuristic as fallback.
@@ -262,6 +309,16 @@ and can warm-start new searches on the same adapter/backend version.
 - Prior weighting uses exponential age decay: `weight = exp(-days_old / half_life)`
 - Half-life is configurable from CLI via `--prior-half-life` (days)
 - Trace span `bayesian_optimizer` records `prior_loaded` and `prior_size`
+
+### Batch Search Mode
+
+`qocc compile batch` runs `search_compile()` across a manifest of circuits and
+produces a batch bundle with:
+
+- per-circuit results in `batch_results.json`
+- cross-circuit summary table in `cross_circuit_metrics.json`
+- top-level batch trace span attributes: `n_circuits`, `n_cache_hits`,
+  `total_candidates_evaluated`
 
 ### Pareto Multi-Objective Selection
 
