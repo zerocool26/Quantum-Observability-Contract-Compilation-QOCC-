@@ -1,5 +1,5 @@
 # QOCC — Quantum Observability + Contract-Based Compilation
-
+# THIS IS STRICTLY AN EXPERIMENT WITH THE LIMITS OF AI KNOWLEDGE AND POWER - NOTHING MORE NOTHING LESS - I AM NOT AN EXPERT - ALL RESULSTS ARE AT YOUR OWN RISK OF YOUR OWN MACHINES AND SETUPS !
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
