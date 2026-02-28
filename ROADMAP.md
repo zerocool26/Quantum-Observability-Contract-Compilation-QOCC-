@@ -90,7 +90,7 @@
 
 ### Additional adapters:
 - [x] pytket adapter
-- [ ] CUDA-Q adapter (optional)
+- [x] CUDA-Q adapter (optional)
 - [x] Stim/PyMatching/sinter (QEC mode)
 - [x] IBM Quantum Runtime adapter (`execute()` + job polling spans)
 - [x] Asynchronous hardware job tracking (`qocc trace watch` with timeout and on-complete hook)
