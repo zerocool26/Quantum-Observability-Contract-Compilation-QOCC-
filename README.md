@@ -14,6 +14,7 @@
 - **Nondeterminism detection** — Compile multiple times and verify output stability
 - **Content-addressed caching** — Cache compilation results keyed by circuit hash + pipeline spec + backend version
 - **Plugin system** — Register custom adapters and evaluators via Python entry points
+- **Hardware execution interface** — Optional adapter `execute()` API with structured `ExecutionResult` metadata
 
 ## Quick Start
 
@@ -33,6 +34,9 @@ qocc contract check --bundle bundle.zip --contracts examples/contracts_examples.
 # Check contracts from DSL file
 qocc contract check --bundle bundle.zip --contracts examples/contracts.qocc
 
+# Contract evaluation cache controls
+qocc contract check --bundle bundle.zip --contracts examples/contracts.qocc --max-cache-age-days 7
+
 # Compilation search
 qocc compile search --adapter qiskit --input examples/ghz.qasm --topk 5 --out search.zip
 
@@ -44,6 +48,12 @@ qocc compile search --adapter qiskit --input examples/ghz.qasm --strategy random
 
 # Bayesian adaptive search (UCB acquisition)
 qocc compile search --adapter qiskit --input examples/ghz.qasm --strategy bayesian --out search.zip
+
+# Bayesian search with historical transfer-learning prior (30-day half-life)
+qocc compile search --adapter qiskit --input examples/ghz.qasm --strategy bayesian --prior-half-life 30 --out search.zip
+
+# Evolutionary search (tournament + crossover + mutation)
+qocc compile search --adapter qiskit --input examples/ghz.qasm --strategy evolutionary --out search.zip
 
 # Noise-aware surrogate scoring (provider-agnostic noise model JSON)
 qocc compile search --adapter qiskit --input examples/ghz.qasm --noise-model examples/noise_model.json --out search.zip
@@ -63,8 +73,17 @@ qocc trace run --adapter qiskit --input examples/ghz.qasm --html
 # Optional notebook visualization dependencies
 pip install -e ".[jupyter]"
 
+# Optional IBM Quantum Runtime hardware execution support
+pip install -e ".[ibm]"
+
 # Run trace and auto-ingest into regression DB
 qocc trace run --adapter qiskit --input examples/ghz.qasm --db
+
+# Watch pending hardware jobs in a bundle and update results in-place
+qocc trace watch --bundle bundle.zip --poll-interval 5 --timeout 300
+
+# Trigger contract checks automatically after hardware completion
+qocc trace watch --bundle bundle.zip --on-complete "qocc contract check --bundle {bundle} --contracts examples/contracts_examples.json"
 
 # Regression DB workflows
 qocc db ingest bundle.zip
@@ -144,6 +163,49 @@ Supported ops: `all_of`, `any_of`, `best_effort`, `with_fallback`.
 - `with_fallback` switches to fallback when primary returns a
     `NotImplementedError`-class failure.
 
+### Contract Result Cache
+
+Contract evaluation results are cached in the content-addressed cache to avoid
+re-running repeated checks. Cache key is derived from:
+
+- `circuit_hash`
+- `contract_spec_hash`
+- `shots`
+- `seed`
+
+Use `--max-cache-age-days` to ignore stale cached contract results.
+
+### Hardware Counts in Contract Evaluation
+
+When a bundle includes `hardware` execution payloads, `check_contract()` can
+consume real-device counts directly for sampling-style contract checks.
+
+- `hardware.input_counts` / `hardware.baseline_counts` are used as baseline counts.
+- `hardware.counts` (or `hardware.result.counts`) is used as compiled/output counts.
+- Hardware output counts take precedence over simulated compiled counts when both are present.
+
+### IBM Runtime Adapter
+
+QOCC includes an `ibm` adapter with runtime hardware execution support through
+`qiskit-ibm-runtime`:
+
+- Optional `execute()` path for real-device job submission and polling
+- Required hardware spans: `job_submit`, `queue_wait`, `job_complete`, `result_fetch`
+- Polling events emitted as `job_polling`
+- Metadata includes `job_id`, provider/backend information, basis gates,
+  coupling-map hash, and raw runtime result payload
+
+### Hardware Job Watch
+
+`qocc trace watch` monitors pending hardware jobs recorded in
+`hardware/pending_jobs.json`, polls provider APIs, and updates bundle
+artifacts in place:
+
+- Writes per-job results to `hardware/<job_id>_result.json`
+- Maintains aggregate hardware payload in `hardware/hardware.json`
+- Appends completion spans to `trace.jsonl`
+- Supports timeout and optional automation via `--on-complete`
+
 ### Contract Example
 
 ```json
@@ -176,6 +238,30 @@ The `search_compile()` API and `qocc compile search` CLI implement the full clos
 4. **Validate** top-k candidates via simulation
 5. **Evaluate** contracts on validated candidates
 6. **Select** the best candidate (single-best or Pareto frontier)
+
+### Evolutionary Strategy
+
+`--strategy evolutionary` runs a generation-based optimization loop over
+pipeline parameters using:
+
+- tournament parent selection
+- single-point crossover
+- Gaussian mutation in parameter-index space
+- elitism (carry-forward of top candidates)
+
+One trace span is emitted per generation with attributes:
+`generation`, `best_score`, and `population_diversity`.
+Termination conditions include max generations, convergence by score standard
+deviation, or optional wall-clock budget.
+
+### Bayesian Historical Prior
+
+Bayesian strategy persists scored observations to `~/.qocc/search_history.json`
+and can warm-start new searches on the same adapter/backend version.
+
+- Prior weighting uses exponential age decay: `weight = exp(-days_old / half_life)`
+- Half-life is configurable from CLI via `--prior-half-life` (days)
+- Trace span `bayesian_optimizer` records `prior_loaded` and `prior_size`
 
 ### Pareto Multi-Objective Selection
 

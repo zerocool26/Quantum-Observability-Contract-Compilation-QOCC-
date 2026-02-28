@@ -166,6 +166,18 @@ class ArtifactStore:
             if fp.exists():
                 bundle[name.replace(".json", "")] = json.loads(fp.read_text(encoding="utf-8"))
 
+        # Optional hardware payloads (Phase 11)
+        for hw_name in ["hardware.json", "hardware/hardware.json"]:
+            hw_fp = path / hw_name
+            if hw_fp.exists():
+                try:
+                    loaded_hw = json.loads(hw_fp.read_text(encoding="utf-8"))
+                    if isinstance(loaded_hw, dict):
+                        bundle["hardware"] = loaded_hw
+                        break
+                except Exception:
+                    pass
+
         trace_path = path / "trace.jsonl"
         if trace_path.exists():
             spans = []

@@ -22,7 +22,9 @@ def contract() -> None:
               help="Trace Bundle to check.")
 @click.option("--contracts", "-c", required=True, type=click.Path(exists=True),
               help="Contract specifications file (.json or .qocc DSL).")
-def contract_check(bundle: str, contracts: str) -> None:
+@click.option("--max-cache-age-days", type=float, default=None,
+              help="Maximum age for cached contract results. Older entries are ignored.")
+def contract_check(bundle: str, contracts: str, max_cache_age_days: float | None) -> None:
     """Evaluate contracts against a Trace Bundle.
 
     Exit code 0 = all pass, 1 = at least one failure.
@@ -51,7 +53,7 @@ def contract_check(bundle: str, contracts: str) -> None:
         validate_json_file(contracts, "contracts")
 
     try:
-        results = check_contract(bundle, contracts)
+        results = check_contract(bundle, contracts, max_cache_age_days=max_cache_age_days)
     except Exception as exc:
         console.print(f"[red]Error:[/red] {exc}")
         sys.exit(1)

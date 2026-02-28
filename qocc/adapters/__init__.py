@@ -7,6 +7,13 @@ __all__ = [
     "AdapterBase",
     "SimulationSpec",
     "SimulationResult",
+    "ExecutionResult",
 ]
 
-from qocc.adapters.base import BaseAdapter as AdapterBase, SimulationResult, SimulationSpec, get_adapter
+from qocc.adapters.base import (
+    BaseAdapter as AdapterBase,
+    ExecutionResult,
+    SimulationResult,
+    SimulationSpec,
+    get_adapter,
+)

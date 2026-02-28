@@ -92,6 +92,10 @@
 - [x] pytket adapter
 - [ ] CUDA-Q adapter (optional)
 - [x] Stim/PyMatching/sinter (QEC mode)
+- [x] IBM Quantum Runtime adapter (`execute()` + job polling spans)
+- [x] Asynchronous hardware job tracking (`qocc trace watch` with timeout and on-complete hook)
+- [x] Evolutionary search strategy (`--strategy evolutionary` with per-generation spans)
+- [x] Bayesian transfer-learning prior (`search_history.json`, half-life weighting)
 
 ### Advanced features:
 - [ ] GPU simulation backend integration
@@ -109,6 +113,8 @@
 - [x] Contract DSL support (`.qocc` files in `contract check` and API)
 - [x] Parametric contracts (evaluation-time symbolic tolerance resolution)
 - [x] Contract composition (`all_of`, `any_of`, `best_effort`, `with_fallback`)
+- [x] Contract result caching (keyed by circuit/spec/shots/seed with max-age policy)
+- [x] Hardware execution adapter interface (`ExecutionResult`, optional `execute()`, hardware count ingestion in contract checks)
 
 ---
 

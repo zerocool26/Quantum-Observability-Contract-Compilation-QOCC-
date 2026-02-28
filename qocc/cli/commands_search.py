@@ -31,10 +31,12 @@ def compile_group() -> None:
 @click.option("--shots", type=int, default=1024, help="Simulation shots for validation.")
 @click.option("--mode", "-m", type=click.Choice(["single", "pareto"]), default="single",
               help="Selection mode: single (best surrogate) or pareto (multi-objective).")
-@click.option("--strategy", type=click.Choice(["grid", "random", "bayesian"]), default="grid",
-              help="Search strategy: grid (exhaustive), random (sampling), bayesian (adaptive).")
+@click.option("--strategy", type=click.Choice(["grid", "random", "bayesian", "evolutionary"]), default="grid",
+              help="Search strategy: grid (exhaustive), random (sampling), bayesian (adaptive), evolutionary (genetic).")
 @click.option("--noise-model", type=click.Path(exists=True), default=None,
               help="Optional noise model JSON file for noise-aware surrogate scoring.")
+@click.option("--prior-half-life", type=float, default=30.0,
+              help="Half-life in days for Bayesian historical prior weighting.")
 @click.option("--out", "-o", "output", type=click.Path(), default=None,
               help="Output bundle path.")
 def compile_search(
@@ -48,6 +50,7 @@ def compile_search(
     mode: str,
     strategy: str,
     noise_model: str | None,
+    prior_half_life: float,
     output: str | None,
 ) -> None:
     """Generate, compile, score, validate, and select best pipeline.
@@ -88,6 +91,7 @@ def compile_search(
         search_config = {}
     # Inject strategy from CLI flag
     search_config.setdefault("strategy", strategy)
+    search_config.setdefault("bayesian_prior_half_life_days", prior_half_life)
     if noise_model:
         search_config["noise_model"] = validate_json_file(noise_model, "noise_model", strict=False)
 

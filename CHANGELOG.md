@@ -177,6 +177,125 @@ All notable changes to the QOCC project are documented here.
 ### Validation
 - Full test suite: **424 passed, 5 skipped**.
 
+## [Unreleased] — Phase 14 (Contract Result Caching)
+
+### Added
+- **Contract result cache integration** in `check_contract()` and
+  `search_compile()` leaf evaluation paths.
+- **Cache key formula** per Phase 14.4:
+  `SHA-256(circuit_hash || contract_spec_hash || shots || seed)`.
+- **Staleness control**: `check_contract(..., max_cache_age_days=...)` and CLI
+  flag `qocc contract check --max-cache-age-days ...` to ignore old entries.
+- Cached payload stores pass/fail/details including `shot_count_used` metadata.
+- **Phase 14 cache tests**: `tests/test_phase14_contract_cache.py`.
+
+### Validation
+- Full test suite: **427 passed, 5 skipped**.
+
+## [Unreleased] — Phase 11 (Hardware Execution Adapter Interface)
+
+### Added
+- **`ExecutionResult` dataclass** in `qocc.adapters.base` with required fields:
+  `job_id`, `backend_name`, `shots`, `counts`, `metadata`, `queue_time_s`,
+  `run_time_s`, and `error_mitigation_applied`.
+- **Optional adapter `execute()` interface** on `BaseAdapter` for real hardware
+  submission with trace guidance for required spans:
+  `job_submit`, `queue_wait`, `job_complete`, `result_fetch`, plus
+  `job_polling` events during asynchronous polling.
+- **Adapters package export**: `ExecutionResult` is re-exported from
+  `qocc.adapters`.
+- **Phase 11 tests**: `tests/test_phase11_hardware_execution.py`.
+
+### Changed
+- `check_contract()` now ingests optional hardware count payloads from bundle
+  metadata (`hardware.input_counts`/`baseline_counts`,
+  `hardware.counts`/`hardware.result.counts`) so distribution-style contract
+  checks can run directly on real-device counts.
+
+## [Unreleased] — Phase 11 (IBM Quantum Runtime Adapter)
+
+### Added
+- **IBM adapter**: `qocc.adapters.ibm_adapter.IBMAdapter` with runtime hardware
+  `execute()` implementation using `qiskit_ibm_runtime` primitives.
+- **Primitive support**: `SamplerV2` and `EstimatorV2` submission paths.
+- **Hardware execution tracing** with required spans:
+  `job_submit`, `queue_wait`, `job_complete`, `result_fetch`, plus
+  `job_polling` events during queue wait.
+- **Hardware transpilation span**: `compile/transpile_hardware` records
+  pre/post transpile depth and size metrics.
+- **Execution metadata** records runtime provenance fields including
+  `job_id`, `provider`, `backend_version`, `basis_gates`, and
+  `coupling_map_hash`, with raw runtime result payload embedded in metadata.
+- **Phase 11.2 tests**: `tests/test_phase11_ibm_adapter.py`.
+
+### Changed
+- Adapter resolver fallback now supports `get_adapter("ibm")`.
+- Added optional dependency extra: `qocc[ibm]` (`qiskit-ibm-runtime`).
+- Added adapter entry-point registration: `ibm`.
+- CLI `qocc trace run --adapter` now accepts `ibm`.
+
+## [Unreleased] — Phase 11 (Asynchronous Job Tracking)
+
+### Added
+- **Watch engine**: `qocc.trace.watch.watch_bundle_jobs()` for polling pending
+  hardware jobs recorded in `hardware/pending_jobs.json`.
+- **New CLI command**: `qocc trace watch --bundle ... --poll-interval ...`
+  with support for:
+  - `--timeout` to bound watch duration
+  - `--on-complete` command hook for chained automation
+- **In-place bundle updates** during watch:
+  - per-job result files: `hardware/<job_id>_result.json`
+  - aggregate payload: `hardware/hardware.json`
+  - appended completion spans in `trace.jsonl`
+- **IBM polling integration**: `poll_ibm_job()` helper for retrieving status and
+  results of submitted IBM runtime jobs by `job_id`.
+- **Phase 11.3 tests**: `tests/test_phase11_watch.py`.
+
+### Changed
+- `ArtifactStore.load_bundle()` now loads optional hardware payloads from
+  `hardware.json` or `hardware/hardware.json` into `bundle["hardware"]`.
+
+## [Unreleased] — Phase 12 (Evolutionary Search Strategy)
+
+### Added
+- **Evolutionary optimizer module**: `qocc.search.evolutionary` with
+  tournament selection, single-point crossover, Gaussian mutation, and elitism.
+- **Generation diversity metric** via `population_diversity()`.
+- **Search config support** for evolutionary parameters:
+  `evolutionary_population_size`, `evolutionary_max_generations`,
+  `evolutionary_mutation_rate`, `evolutionary_crossover_rate`,
+  `evolutionary_tournament_size`, `evolutionary_elitism`,
+  `evolutionary_convergence_std`, `evolutionary_wall_clock_s`,
+  `evolutionary_mutation_sigma`.
+- **API integration** in `search_compile()` with generation-loop execution,
+  per-generation span emission (`evolutionary_generation`), and termination
+  by max generations, convergence, wall-clock budget, or population exhaustion.
+- **CLI support**: `qocc compile search --strategy evolutionary`.
+- **Phase 12 tests**: `tests/test_phase12_evolutionary.py`.
+
+### Changed
+- `generate_candidates()` now recognizes strategy `evolutionary` and returns
+  an initial population sized by `evolutionary_population_size`.
+
+## [Unreleased] — Phase 12 (Bayesian Transfer-Learning Prior)
+
+### Added
+- **Persistent Bayesian history** in `~/.qocc/search_history.json` (or custom
+  `bayesian_history_path`) storing observed parameter vectors and scores.
+- **Historical prior loading** for matching adapter + backend version with
+  exponential age decay weighting:
+  `weight = exp(-days_old / half_life_days)`.
+- **Config/CLI support** for half-life tuning:
+  `bayesian_prior_half_life_days` and `qocc compile search --prior-half-life`.
+- **Trace attributes** on `bayesian_optimizer` span:
+  `prior_loaded`, `prior_size`, and `history_appended`.
+- **Phase 12.3 tests**: `tests/test_phase12_bayesian_prior.py`.
+
+### Changed
+- `search_compile()` now runs an adaptive Bayesian loop with observation
+  persistence across rounds and runs.
+- `BayesianSearchOptimizer` now uses weighted observations in UCB estimation.
+
 ## [Unreleased] — Phase 9 (Correctness, Performance & Hygiene)
 
 ### Fixed (High)

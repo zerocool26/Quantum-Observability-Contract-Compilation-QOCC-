@@ -21,7 +21,7 @@ def trace() -> None:
 
 
 @trace.command("run")
-@click.option("--adapter", "-a", required=True, type=click.Choice(["qiskit", "cirq", "tket", "stim"]),
+@click.option("--adapter", "-a", required=True, type=click.Choice(["qiskit", "cirq", "tket", "stim", "ibm"]),
               help="Backend adapter to use.")
 @click.option("--input", "-i", "input_path", required=True, type=click.Path(exists=True),
               help="Input circuit file (QASM).")
@@ -217,3 +217,52 @@ def trace_replay(bundle: str, output: str | None) -> None:
 
     if result.replay_bundle:
         console.print(f"  Replay bundle: {result.replay_bundle}")
+
+
+@trace.command("watch")
+@click.option("--bundle", "bundle_path", required=True, type=click.Path(exists=True),
+              help="Bundle zip or directory containing hardware/pending_jobs.json.")
+@click.option("--poll-interval", type=float, default=5.0,
+              help="Polling interval in seconds for provider job status checks.")
+@click.option("--timeout", type=float, default=None,
+              help="Optional timeout in seconds for watch operation.")
+@click.option("--on-complete", "on_complete", type=str, default=None,
+              help="Optional command to run after one or more jobs complete. Use {bundle} placeholder.")
+def trace_watch(
+    bundle_path: str,
+    poll_interval: float,
+    timeout: float | None,
+    on_complete: str | None,
+) -> None:
+    """Watch pending hardware jobs in a bundle and update results in-place."""
+    from qocc.trace.watch import watch_bundle_jobs
+
+    console.print("[bold blue]QOCC Hardware Watch[/bold blue]")
+    console.print(f"  Bundle: {bundle_path}")
+    console.print(f"  Poll interval: {poll_interval}s")
+    if timeout is not None:
+        console.print(f"  Timeout: {timeout}s")
+
+    try:
+        summary = watch_bundle_jobs(
+            bundle_path=bundle_path,
+            poll_interval_s=poll_interval,
+            timeout_s=timeout,
+            on_complete=on_complete,
+        )
+    except Exception as exc:
+        console.print(f"[red]Watch failed:[/red] {exc}")
+        sys.exit(1)
+
+    console.print("[green]✓ Watch complete[/green]")
+    console.print(f"  Completed jobs: {summary.get('completed', 0)}")
+    console.print(f"  Failed jobs:    {summary.get('failed', 0)}")
+    console.print(f"  Pending jobs:   {summary.get('pending', 0)}")
+
+    hook = summary.get("on_complete")
+    if isinstance(hook, dict):
+        rc = hook.get("returncode")
+        if rc == 0:
+            console.print("[green]✓ on-complete command succeeded[/green]")
+        else:
+            console.print(f"[yellow]⚠ on-complete command returned {rc}[/yellow]")

@@ -516,6 +516,7 @@ def check_contract(
     bundle_metrics = bundle.get("metrics", {})
     input_metrics = bundle_metrics.get("input", {})
     compiled_metrics = bundle_metrics.get("compiled", {})
+    hw_counts_input, hw_counts_compiled = _extract_hardware_counts(bundle)
 
     # Attempt to get adapter for simulation
     adapter = None
@@ -608,6 +609,11 @@ def check_contract(
             sim_counts_input = _run_sim(input_handle)
             sim_counts_compiled = _run_sim(compiled_handle)
 
+    if sim_counts_input is None and hw_counts_input is not None:
+        sim_counts_input = hw_counts_input
+    if hw_counts_compiled is not None:
+        sim_counts_compiled = hw_counts_compiled
+
     # ── Memory tracking (tracemalloc) ────────────────────────
     import tracemalloc as _tm
 
@@ -618,6 +624,7 @@ def check_contract(
     contract_cache = CompilationCache()
 
     circuit_hash_for_cache = _resolve_contract_circuit_hash(bundle, compiled_handle)
+    cache_enabled = circuit_hash_for_cache != "unknown_circuit_hash"
 
     def _evaluate_leaf(entry: dict[str, Any]) -> ContractResult:
         try:
@@ -651,7 +658,7 @@ def check_contract(
             seed=simulation_seed,
         )
 
-        if _is_contract_cache_fresh(contract_cache, cache_key, max_cache_age_days):
+        if cache_enabled and _is_contract_cache_fresh(contract_cache, cache_key, max_cache_age_days):
             cached = contract_cache.get(cache_key)
             if isinstance(cached, dict) and {"name", "passed", "details"}.issubset(cached.keys()):
                 return ContractResult(
@@ -675,17 +682,18 @@ def check_contract(
         details = evaluated_dict.get("details", {})
         if isinstance(details, dict):
             details.setdefault("shot_count_used", simulation_shots)
-        contract_cache.put(
-            cache_key,
-            evaluated_dict,
-            metadata={
-                "kind": "contract_result",
-                "circuit_hash": circuit_hash_for_cache,
-                "contract_spec_hash": spec_hash,
-                "shots": simulation_shots,
-                "seed": simulation_seed,
-            },
-        )
+        if cache_enabled:
+            contract_cache.put(
+                cache_key,
+                evaluated_dict,
+                metadata={
+                    "kind": "contract_result",
+                    "circuit_hash": circuit_hash_for_cache,
+                    "contract_spec_hash": spec_hash,
+                    "shots": simulation_shots,
+                    "seed": simulation_seed,
+                },
+            )
         return evaluated
 
     for entry in entries:
@@ -929,6 +937,36 @@ def _contract_result_cache_key(
     return hash_string(f"{circuit_hash}||{contract_spec_hash}||{shots}||{seed}")
 
 
+def _coerce_counts_dict(value: Any) -> dict[str, int] | None:
+    """Best-effort conversion of provider payload into counts mapping."""
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, int] = {}
+    for key, raw in value.items():
+        if not isinstance(key, str):
+            continue
+        try:
+            out[key] = int(raw)
+        except (TypeError, ValueError):
+            return None
+    return out or None
+
+
+def _extract_hardware_counts(bundle: dict[str, Any]) -> tuple[dict[str, int] | None, dict[str, int] | None]:
+    """Extract optional baseline/compiled counts from bundle hardware payload."""
+    hw = bundle.get("hardware")
+    if not isinstance(hw, dict):
+        return None, None
+
+    baseline = _coerce_counts_dict(hw.get("input_counts") or hw.get("baseline_counts"))
+
+    compiled = _coerce_counts_dict(hw.get("counts") or hw.get("compiled_counts"))
+    if compiled is None and isinstance(hw.get("result"), dict):
+        compiled = _coerce_counts_dict(hw["result"].get("counts"))
+
+    return baseline, compiled
+
+
 def _is_contract_cache_fresh(
     cache: CompilationCache,
     key: str,
@@ -1016,10 +1054,11 @@ def search_compile(
     Returns:
         SearchResult dict with selected candidate and full rankings.
     """
-    from qocc.search.space import SearchSpaceConfig, Candidate, generate_candidates
+    from qocc.search.space import SearchSpaceConfig, Candidate, BayesianSearchOptimizer, generate_candidates
     from qocc.search.scorer import rank_candidates
     from qocc.search.validator import validate_candidates
     from qocc.search.selector import select_best
+    from qocc.search.evolutionary import EvolutionaryOptimizer, population_diversity
     from qocc.adapters.base import SimulationSpec
     from qocc.trace.emitter import TraceEmitter
     from qocc.contracts.spec import ContractSpec
@@ -1093,12 +1132,19 @@ def search_compile(
         span.set_attribute("hash", normalized.stable_hash()[:16])
         normalize_span_id = span.span_id
 
-    # ── 2. Generate candidates ───────────────────────────────
+    # ── 2. Generate candidates / optimizer state ────────────
+    candidates: list[Candidate] = []
     with emitter.span("generate_candidates") as span:
-        candidates = generate_candidates(config)
+        if config.strategy.lower() == "evolutionary":
+            evo = EvolutionaryOptimizer(config)
+            candidates = evo.initial_population()
+            span.set_attribute("strategy", "evolutionary")
+            span.set_attribute("population_size", len(candidates))
+        else:
+            candidates = generate_candidates(config)
         span.set_attribute("num_candidates", len(candidates))
 
-    # ── 3. Compile each candidate (with cache) ──────────────
+    # ── 3. Compile candidate(s) (with cache) ────────────────
     circuit_handles: dict[str, Any] = {}
     cache = CompilationCache()
     cache_index: list[dict[str, Any]] = []
@@ -1172,17 +1218,18 @@ def search_compile(
             emitter.finish_span(cand_span, status="ERROR")
             return candidate, None, local_cache_entries
 
-    with emitter.span("compile_candidates") as compile_parent:
-        # Use parallel compilation for speed when many candidates exist
+    def _compile_population(population: list[Candidate], parent_span: Any) -> None:
         import concurrent.futures
 
-        max_workers = min(len(candidates), os.cpu_count() or 4, 8)
+        if not population:
+            return
 
-        if len(candidates) > 1 and max_workers > 1:
+        max_workers = min(len(population), os.cpu_count() or 4, 8)
+        if len(population) > 1 and max_workers > 1:
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
                 futures = {
-                    pool.submit(_compile_one_candidate, c, compile_parent): c
-                    for c in candidates
+                    pool.submit(_compile_one_candidate, c, parent_span): c
+                    for c in population
                 }
                 for future in concurrent.futures.as_completed(futures):
                     cand, compiled_handle, c_entries = future.result()
@@ -1190,22 +1237,151 @@ def search_compile(
                     if compiled_handle is not None:
                         circuit_handles[cand.candidate_id] = compiled_handle
         else:
-            # Serial fallback for single candidate
-            for candidate in candidates:
-                cand, compiled_handle, c_entries = _compile_one_candidate(candidate, compile_parent)
+            for candidate in population:
+                cand, compiled_handle, c_entries = _compile_one_candidate(candidate, parent_span)
                 cache_index.extend(c_entries)
                 if compiled_handle is not None:
                     circuit_handles[cand.candidate_id] = compiled_handle
 
-        compile_parent.set_attribute("compiled_count", len(circuit_handles))
-        compile_parent.set_attribute("parallel_workers", max_workers)
+    ranked: list[Candidate]
+    strategy_lower = config.strategy.lower()
+    if strategy_lower == "evolutionary":
+        import numpy as np
 
-    # ── 4. Surrogate score & rank ────────────────────────────
-    with emitter.span("score_and_rank") as span:
-        ranked = rank_candidates(candidates, noise_model=noise_model_payload)
-        span.set_attribute("ranking_complete", True)
-        if noise_model_hash:
-            span.set_attribute("noise_model_hash", noise_model_hash[:16])
+        evo = EvolutionaryOptimizer(config)
+        evaluated: dict[str, Candidate] = {}
+        strategy_reason = "max_generations"
+        generations_run = 0
+        started = time.perf_counter()
+        population = candidates
+
+        with emitter.span(
+            "evolutionary_search",
+            attributes={
+                "population_size": config.evolutionary_population_size,
+                "max_generations": config.evolutionary_max_generations,
+                "mutation_rate": config.evolutionary_mutation_rate,
+                "crossover_rate": config.evolutionary_crossover_rate,
+            },
+        ) as evo_span:
+            for generation in range(max(1, int(config.evolutionary_max_generations))):
+                generations_run = generation + 1
+                with emitter.span(
+                    "evolutionary_generation",
+                    attributes={"generation": generations_run},
+                ) as gen_span:
+                    for idx, cand in enumerate(population):
+                        if cand.candidate_id in evaluated:
+                            population[idx] = evaluated[cand.candidate_id]
+
+                    with emitter.span("compile_candidates") as compile_parent:
+                        _compile_population(population, compile_parent)
+                        compile_parent.set_attribute("compiled_count", len(circuit_handles))
+
+                    ranked_population = rank_candidates(population, noise_model=noise_model_payload)
+                    for cand in ranked_population:
+                        evaluated[cand.candidate_id] = cand
+
+                    finite_scores = [c.surrogate_score for c in ranked_population if c.surrogate_score < float("inf")]
+                    best_score = min(finite_scores) if finite_scores else float("inf")
+                    diversity = population_diversity(ranked_population)
+                    gen_span.set_attribute("best_score", best_score)
+                    gen_span.set_attribute("population_diversity", diversity)
+
+                wall_elapsed = time.perf_counter() - started
+                if config.evolutionary_wall_clock_s is not None and wall_elapsed >= float(config.evolutionary_wall_clock_s):
+                    strategy_reason = "wall_clock_budget"
+                    break
+
+                if finite_scores and len(finite_scores) > 1:
+                    if float(np.std(np.array(finite_scores, dtype=float))) <= float(config.evolutionary_convergence_std):
+                        strategy_reason = "convergence"
+                        break
+
+                if generations_run >= int(config.evolutionary_max_generations):
+                    strategy_reason = "max_generations"
+                    break
+
+                population = evo.next_generation(ranked_population)
+                if not population:
+                    strategy_reason = "no_population"
+                    break
+
+            ranked = sorted(evaluated.values(), key=lambda c: c.surrogate_score)
+            candidates = ranked
+            evo_span.set_attribute("generations_run", generations_run)
+            evo_span.set_attribute("termination_reason", strategy_reason)
+            evo_span.set_attribute("total_candidates_evaluated", len(ranked))
+            if noise_model_hash:
+                evo_span.set_attribute("noise_model_hash", noise_model_hash[:16])
+    elif strategy_lower == "bayesian":
+        evaluated: dict[str, Candidate] = {}
+        backend_version = adapter.describe_backend().version
+        optimizer = BayesianSearchOptimizer(config, history_path=config.bayesian_history_path)
+        batch_size = max(1, int(config.bayesian_init_points))
+        rounds = 0
+
+        with emitter.span(
+            "bayesian_optimizer",
+            attributes={
+                "explore_weight": config.bayesian_explore_weight,
+                "prior_half_life_days": config.bayesian_prior_half_life_days,
+            },
+        ) as bayes_span:
+            prior_size = optimizer.load_prior(
+                backend_version=backend_version,
+                half_life_days=config.bayesian_prior_half_life_days,
+            )
+            bayes_span.set_attribute("prior_loaded", prior_size > 0)
+            bayes_span.set_attribute("prior_size", prior_size)
+
+            remaining_budget = max(1, int(config.max_candidates))
+            batch = candidates if candidates else optimizer.initial_candidates()
+
+            while batch and remaining_budget > 0:
+                rounds += 1
+                batch = batch[:remaining_budget]
+                with emitter.span("compile_candidates", attributes={"round": rounds}) as compile_parent:
+                    _compile_population(batch, compile_parent)
+                    compile_parent.set_attribute("compiled_count", len(circuit_handles))
+
+                ranked_batch = rank_candidates(batch, noise_model=noise_model_payload)
+                optimizer.observe(ranked_batch)
+                for cand in ranked_batch:
+                    evaluated[cand.candidate_id] = cand
+
+                remaining_budget = max(0, int(config.max_candidates) - len(evaluated))
+                if remaining_budget <= 0:
+                    break
+
+                suggested = optimizer.suggest(batch_size=min(batch_size, remaining_budget))
+                fresh: list[Candidate] = []
+                for cand in suggested:
+                    if cand.candidate_id not in evaluated:
+                        fresh.append(cand)
+                if not fresh:
+                    break
+                batch = fresh
+
+            appended = optimizer.persist_history(backend_version=backend_version)
+            bayes_span.set_attribute("history_appended", appended)
+            bayes_span.set_attribute("rounds", rounds)
+
+            ranked = sorted(evaluated.values(), key=lambda c: c.surrogate_score)
+            candidates = ranked
+            if noise_model_hash:
+                bayes_span.set_attribute("noise_model_hash", noise_model_hash[:16])
+    else:
+        with emitter.span("compile_candidates") as compile_parent:
+            _compile_population(candidates, compile_parent)
+            compile_parent.set_attribute("compiled_count", len(circuit_handles))
+
+        # ── 4. Surrogate score & rank ────────────────────────────
+        with emitter.span("score_and_rank") as span:
+            ranked = rank_candidates(candidates, noise_model=noise_model_payload)
+            span.set_attribute("ranking_complete", True)
+            if noise_model_hash:
+                span.set_attribute("noise_model_hash", noise_model_hash[:16])
 
     # Clamp top_k to candidate count
     effective_top_k = min(top_k, len(ranked))
@@ -1236,6 +1412,7 @@ def search_compile(
 
             baseline_counts: dict[str, int] | None = None
             baseline_metrics = adapter.get_metrics(normalized).to_dict()
+            contract_result_cache = CompilationCache()
             needs_sampling = any(s.type in ("distribution", "observable", "clifford") for s in contract_specs)
             if needs_sampling:
                 try:
@@ -1253,6 +1430,10 @@ def search_compile(
 
                 candidate_counts = candidate.validation_result.get("counts")
                 candidate_contracts: list[dict[str, Any]] = []
+                circuit_hash_for_cache = _resolve_contract_circuit_hash(
+                    {"metrics": {"compiled": candidate.metrics}},
+                    compiled_handle,
+                )
 
                 def _eval_candidate_leaf(leaf: dict[str, Any]) -> ContractResult:
                     try:
@@ -1278,11 +1459,30 @@ def search_compile(
                             details={"type": spec.type, "error": str(exc)},
                         )
 
+                    spec_hash = hash_dict(spec_eval.to_dict())
+                    cache_key = _contract_result_cache_key(
+                        circuit_hash=circuit_hash_for_cache,
+                        contract_spec_hash=spec_hash,
+                        shots=simulation_shots,
+                        seed=simulation_seed,
+                    )
+
+                    if _is_contract_cache_fresh(contract_result_cache, cache_key, None):
+                        cached = contract_result_cache.get(cache_key)
+                        if isinstance(cached, dict) and {"name", "passed", "details"}.issubset(cached.keys()):
+                            return ContractResult(
+                                name=str(cached.get("name", spec_eval.name)),
+                                passed=bool(cached.get("passed", False)),
+                                details=dict(cached.get("details", {})),
+                            )
+
+                    result_obj: ContractResult
+
                     if spec_eval.evaluator not in ("auto", ""):
                         custom_fn = get_evaluator(spec_eval.evaluator)
                         if custom_fn is not None:
                             try:
-                                return custom_fn(
+                                result_obj = custom_fn(
                                     spec_eval,
                                     counts_before=baseline_counts,
                                     counts_after=candidate_counts,
@@ -1292,40 +1492,57 @@ def search_compile(
                                     bundle={"metrics": {"compiled": candidate.metrics}},
                                 )
                             except NotImplementedError as exc:
-                                return ContractResult(
+                                result_obj = ContractResult(
                                     name=spec_eval.name,
                                     passed=False,
                                     details={"type": spec_eval.type, "error": f"NotImplementedError: {exc}"},
                                 )
                             except Exception as exc:
-                                return ContractResult(
+                                result_obj = ContractResult(
                                     name=spec_eval.name,
                                     passed=False,
                                     details={"type": spec_eval.type, "error": f"Custom evaluator {spec_eval.evaluator!r} failed: {exc}"},
                                 )
+                            result_dict = result_obj.to_dict()
+                            if isinstance(result_dict.get("details"), dict):
+                                result_dict["details"].setdefault("shot_count_used", simulation_shots)
+                            contract_result_cache.put(
+                                cache_key,
+                                result_dict,
+                                metadata={
+                                    "kind": "contract_result",
+                                    "circuit_hash": circuit_hash_for_cache,
+                                    "contract_spec_hash": spec_hash,
+                                    "shots": simulation_shots,
+                                    "seed": simulation_seed,
+                                },
+                            )
+                            return result_obj
 
                     if spec_eval.type == "distribution":
                         if baseline_counts and candidate_counts:
-                            return evaluate_distribution_contract(spec_eval, baseline_counts, candidate_counts)
-                        return ContractResult(
-                            name=spec_eval.name,
-                            passed=False,
-                            details={"type": "distribution", "error": "No simulation data available for candidate contract evaluation."},
-                        )
+                            result_obj = evaluate_distribution_contract(spec_eval, baseline_counts, candidate_counts)
+                        else:
+                            result_obj = ContractResult(
+                                name=spec_eval.name,
+                                passed=False,
+                                details={"type": "distribution", "error": "No simulation data available for candidate contract evaluation."},
+                            )
                     if spec_eval.type == "observable":
                         if baseline_counts and candidate_counts:
-                            return evaluate_observable_contract(
+                            result_obj = evaluate_observable_contract(
                                 spec_eval,
                                 _counts_to_observable_values(baseline_counts),
                                 _counts_to_observable_values(candidate_counts),
                             )
-                        return ContractResult(
-                            name=spec_eval.name,
-                            passed=False,
-                            details={"type": "observable", "error": "No simulation data available for candidate contract evaluation."},
-                        )
+                        else:
+                            result_obj = ContractResult(
+                                name=spec_eval.name,
+                                passed=False,
+                                details={"type": "observable", "error": "No simulation data available for candidate contract evaluation."},
+                            )
                     if spec_eval.type == "clifford":
-                        return evaluate_clifford_contract(
+                        result_obj = evaluate_clifford_contract(
                             spec_eval,
                             normalized,
                             compiled_handle,
@@ -1341,17 +1558,18 @@ def search_compile(
                             sv_before = None
                             sv_after = None
                         if sv_before is not None and sv_after is not None:
-                            return evaluate_exact_equivalence(spec_eval, sv_before, sv_after)
-                        return ContractResult(
-                            name=spec_eval.name,
-                            passed=False,
-                            details={"type": "exact", "error": "Statevector simulation not available for candidate."},
-                        )
+                            result_obj = evaluate_exact_equivalence(spec_eval, sv_before, sv_after)
+                        else:
+                            result_obj = ContractResult(
+                                name=spec_eval.name,
+                                passed=False,
+                                details={"type": "exact", "error": "Statevector simulation not available for candidate."},
+                            )
                     if spec_eval.type == "cost":
-                        return _evaluate_cost_contract(spec_eval, candidate.metrics)
+                        result_obj = _evaluate_cost_contract(spec_eval, candidate.metrics)
                     if spec_eval.type == "qec":
                         sim_meta = candidate.validation_result.get("metadata", {})
-                        return evaluate_qec_contract(
+                        result_obj = evaluate_qec_contract(
                             spec_eval,
                             bundle={
                                 "logical_error_rates": sim_meta.get("logical_error_rates"),
@@ -1360,11 +1578,28 @@ def search_compile(
                             compiled_metrics=candidate.metrics,
                             simulation_metadata=sim_meta,
                         )
-                    return ContractResult(
-                        name=spec_eval.name,
-                        passed=False,
-                        details={"type": spec_eval.type, "error": f"Unknown contract type: {spec_eval.type!r}"},
+                    if "result_obj" not in locals():
+                        result_obj = ContractResult(
+                            name=spec_eval.name,
+                            passed=False,
+                            details={"type": spec_eval.type, "error": f"Unknown contract type: {spec_eval.type!r}"},
+                        )
+
+                    result_dict = result_obj.to_dict()
+                    if isinstance(result_dict.get("details"), dict):
+                        result_dict["details"].setdefault("shot_count_used", simulation_shots)
+                    contract_result_cache.put(
+                        cache_key,
+                        result_dict,
+                        metadata={
+                            "kind": "contract_result",
+                            "circuit_hash": circuit_hash_for_cache,
+                            "contract_spec_hash": spec_hash,
+                            "shots": simulation_shots,
+                            "seed": simulation_seed,
+                        },
                     )
+                    return result_obj
 
                 iterable_entries = contract_entries if contract_entries else [s.to_dict() for s in contract_specs]
                 for entry in iterable_entries:

@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import abc
 import logging
-from typing import Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from qocc.trace.emitter import TraceEmitter
 
 from qocc.core.circuit_handle import BackendInfo, CircuitHandle, PassLogEntry, PipelineSpec
 
@@ -112,6 +116,32 @@ class CompileResult:
         return cls(circuit=handle, pass_log=pass_log)
 
 
+@dataclass
+class ExecutionResult:
+    """Result of a real hardware execution run."""
+
+    job_id: str
+    backend_name: str
+    shots: int
+    counts: dict[str, int]
+    metadata: dict[str, Any] = field(default_factory=dict)
+    queue_time_s: float | None = None
+    run_time_s: float | None = None
+    error_mitigation_applied: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "job_id": self.job_id,
+            "backend_name": self.backend_name,
+            "shots": self.shots,
+            "counts": self.counts,
+            "metadata": self.metadata,
+            "queue_time_s": self.queue_time_s,
+            "run_time_s": self.run_time_s,
+            "error_mitigation_applied": self.error_mitigation_applied,
+        }
+
+
 class MetricsSnapshot:
     """Immutable metrics for a circuit at a point in time."""
 
@@ -174,6 +204,25 @@ class BaseAdapter(abc.ABC):
     def simulate(self, circuit: CircuitHandle, spec: SimulationSpec) -> SimulationResult:
         """Run simulation. Optional in MVP — adapters may raise NotImplementedError."""
         raise NotImplementedError(f"{self.name()} adapter does not support simulation yet.")
+
+    def execute(
+        self,
+        circuit: CircuitHandle,
+        backend_spec: dict[str, Any],
+        shots: int = 1024,
+        emitter: "TraceEmitter" | None = None,
+    ) -> ExecutionResult:
+        """Submit to real hardware and return counts + job metadata.
+
+        Adapters implementing real hardware execution must emit these span names:
+        ``job_submit``, ``queue_wait``, ``job_complete``, ``result_fetch``.
+
+        Recommended span attributes include ``job_id``, ``provider``,
+        ``backend_version``, ``basis_gates``, and ``coupling_map_hash``.
+        While polling asynchronous jobs, adapters should add ``job_polling``
+        events at their configured interval and record total wall time.
+        """
+        raise NotImplementedError(f"{self.name()} adapter does not support hardware execute() yet.")
 
     @abc.abstractmethod
     def get_metrics(self, circuit: CircuitHandle) -> MetricsSnapshot:
@@ -255,5 +304,8 @@ def get_adapter(name: str) -> BaseAdapter:
         elif name == "stim":
             from qocc.adapters.stim_adapter import StimAdapter  # noqa: F811
             return StimAdapter()
+        elif name == "ibm":
+            from qocc.adapters.ibm_adapter import IBMAdapter  # noqa: F811
+            return IBMAdapter()
         raise KeyError(f"No adapter registered for {name!r}. Available: {list(_REGISTRY)}")
     return _REGISTRY[name]()

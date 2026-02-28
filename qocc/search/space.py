@@ -7,6 +7,7 @@ Supports three strategies:
   - ``"grid"``  — exhaustive Cartesian product (default)
   - ``"random"`` — random sampling from the parameter space
   - ``"bayesian"`` — surrogate-model-guided adaptive search (uses scipy/numpy)
+    - ``"evolutionary"`` — tournament/crossover/mutation generations
 """
 
 from __future__ import annotations
@@ -15,7 +16,9 @@ import hashlib
 import itertools
 import json
 import math
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from qocc.core.circuit_handle import PipelineSpec
@@ -37,6 +40,17 @@ class SearchSpaceConfig:
         max_candidates: Maximum candidates to generate (used by random/bayesian).
         bayesian_init_points: Initial random samples before surrogate kicks in.
         bayesian_explore_weight: Exploration vs exploitation (higher = more exploration).
+        bayesian_prior_half_life_days: Prior decay half-life for historical warm-start.
+        bayesian_history_path: Optional custom path for persisted search history.
+        evolutionary_population_size: Population size per generation.
+        evolutionary_max_generations: Maximum generations before termination.
+        evolutionary_mutation_rate: Per-gene mutation probability.
+        evolutionary_crossover_rate: Probability of one-point crossover.
+        evolutionary_tournament_size: Tournament pool size for parent selection.
+        evolutionary_elitism: Number of top individuals carried unchanged.
+        evolutionary_convergence_std: Stop when score stddev <= threshold.
+        evolutionary_wall_clock_s: Optional wall-clock budget for search.
+        evolutionary_mutation_sigma: Gaussian mutation scale in index space.
     """
 
     adapter: str = "qiskit"
@@ -49,6 +63,17 @@ class SearchSpaceConfig:
     max_candidates: int = 50
     bayesian_init_points: int = 5
     bayesian_explore_weight: float = 1.5
+    bayesian_prior_half_life_days: float = 30.0
+    bayesian_history_path: str | None = None
+    evolutionary_population_size: int = 16
+    evolutionary_max_generations: int = 10
+    evolutionary_mutation_rate: float = 0.2
+    evolutionary_crossover_rate: float = 0.8
+    evolutionary_tournament_size: int = 3
+    evolutionary_elitism: int = 2
+    evolutionary_convergence_std: float = 1e-3
+    evolutionary_wall_clock_s: float | None = None
+    evolutionary_mutation_sigma: float = 0.3
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,6 +87,17 @@ class SearchSpaceConfig:
             "max_candidates": self.max_candidates,
             "bayesian_init_points": self.bayesian_init_points,
             "bayesian_explore_weight": self.bayesian_explore_weight,
+            "bayesian_prior_half_life_days": self.bayesian_prior_half_life_days,
+            "bayesian_history_path": self.bayesian_history_path,
+            "evolutionary_population_size": self.evolutionary_population_size,
+            "evolutionary_max_generations": self.evolutionary_max_generations,
+            "evolutionary_mutation_rate": self.evolutionary_mutation_rate,
+            "evolutionary_crossover_rate": self.evolutionary_crossover_rate,
+            "evolutionary_tournament_size": self.evolutionary_tournament_size,
+            "evolutionary_elitism": self.evolutionary_elitism,
+            "evolutionary_convergence_std": self.evolutionary_convergence_std,
+            "evolutionary_wall_clock_s": self.evolutionary_wall_clock_s,
+            "evolutionary_mutation_sigma": self.evolutionary_mutation_sigma,
         }
 
     @classmethod
@@ -77,6 +113,17 @@ class SearchSpaceConfig:
             max_candidates=d.get("max_candidates", 50),
             bayesian_init_points=d.get("bayesian_init_points", 5),
             bayesian_explore_weight=d.get("bayesian_explore_weight", 1.5),
+            bayesian_prior_half_life_days=d.get("bayesian_prior_half_life_days", 30.0),
+            bayesian_history_path=d.get("bayesian_history_path"),
+            evolutionary_population_size=d.get("evolutionary_population_size", 16),
+            evolutionary_max_generations=d.get("evolutionary_max_generations", 10),
+            evolutionary_mutation_rate=d.get("evolutionary_mutation_rate", 0.2),
+            evolutionary_crossover_rate=d.get("evolutionary_crossover_rate", 0.8),
+            evolutionary_tournament_size=d.get("evolutionary_tournament_size", 3),
+            evolutionary_elitism=d.get("evolutionary_elitism", 2),
+            evolutionary_convergence_std=d.get("evolutionary_convergence_std", 1e-3),
+            evolutionary_wall_clock_s=d.get("evolutionary_wall_clock_s"),
+            evolutionary_mutation_sigma=d.get("evolutionary_mutation_sigma", 0.3),
         )
 
 
@@ -131,6 +178,8 @@ def generate_candidates(config: SearchSpaceConfig) -> list[Candidate]:
         return _generate_random(config)
     elif strategy == "bayesian":
         return _generate_bayesian_init(config)
+    elif strategy == "evolutionary":
+        return _generate_evolutionary_init(config)
     else:
         return _generate_grid(config)
 
@@ -234,6 +283,20 @@ def _generate_bayesian_init(config: SearchSpaceConfig) -> list[Candidate]:
     return _generate_random(config_copy)
 
 
+def _generate_evolutionary_init(config: SearchSpaceConfig) -> list[Candidate]:
+    """Generate initial population for evolutionary strategy."""
+    config_copy = SearchSpaceConfig(
+        adapter=config.adapter,
+        optimization_levels=config.optimization_levels,
+        seeds=config.seeds,
+        routing_methods=config.routing_methods,
+        extra_params=config.extra_params,
+        strategy="random",
+        max_candidates=max(2, int(config.evolutionary_population_size)),
+    )
+    return _generate_random(config_copy)
+
+
 class BayesianSearchOptimizer:
     """Surrogate-model-guided adaptive search.
 
@@ -250,7 +313,7 @@ class BayesianSearchOptimizer:
             # compile & score next_batch ...
     """
 
-    def __init__(self, config: SearchSpaceConfig) -> None:
+    def __init__(self, config: SearchSpaceConfig, history_path: str | Path | None = None) -> None:
         self.config = config
         self._axes: dict[str, list[Any]] = {
             "optimization_level": config.optimization_levels,
@@ -268,7 +331,13 @@ class BayesianSearchOptimizer:
 
         self._observed_X: list[list[float]] = []
         self._observed_Y: list[float] = []
+        self._observed_W: list[float] = []
         self.explore_weight = config.bayesian_explore_weight
+        self.history_path = Path(history_path) if history_path is not None else self._default_history_path()
+        self._current_run_records: list[dict[str, Any]] = []
+
+    def _default_history_path(self) -> Path:
+        return Path.home() / ".qocc" / "search_history.json"
 
     def _encode(self, params: dict[str, Any]) -> list[float]:
         """Encode a parameter dict to a numeric vector."""
@@ -303,6 +372,93 @@ class BayesianSearchOptimizer:
                 params["optimization_level"] = c.pipeline.optimization_level
                 self._observed_X.append(self._encode(params))
                 self._observed_Y.append(c.surrogate_score)
+                self._observed_W.append(1.0)
+                self._current_run_records.append(
+                    {
+                        "adapter": self.config.adapter,
+                        "params": params,
+                        "score": float(c.surrogate_score),
+                        "timestamp": time.time(),
+                    }
+                )
+
+    def load_prior(self, backend_version: str, half_life_days: float | None = None) -> int:
+        """Load weighted historical observations for same adapter/backend."""
+        if half_life_days is None:
+            half_life_days = self.config.bayesian_prior_half_life_days
+        if half_life_days <= 0:
+            half_life_days = 30.0
+
+        if not self.history_path.exists():
+            return 0
+
+        try:
+            data = json.loads(self.history_path.read_text(encoding="utf-8"))
+        except Exception:
+            return 0
+
+        if not isinstance(data, list):
+            return 0
+
+        now = time.time()
+        loaded = 0
+        for rec in data:
+            if not isinstance(rec, dict):
+                continue
+            if rec.get("adapter") != self.config.adapter:
+                continue
+            if str(rec.get("backend_version", "")) != str(backend_version):
+                continue
+
+            params = rec.get("params")
+            score = rec.get("score")
+            ts = rec.get("timestamp")
+            if not isinstance(params, dict):
+                continue
+            try:
+                score_f = float(score)
+                ts_f = float(ts)
+            except (TypeError, ValueError):
+                continue
+
+            age_days = max(0.0, (now - ts_f) / 86400.0)
+            weight = math.exp(-age_days / float(half_life_days))
+            if weight <= 1e-6:
+                continue
+
+            self._observed_X.append(self._encode(params))
+            self._observed_Y.append(score_f)
+            self._observed_W.append(weight)
+            loaded += 1
+
+        return loaded
+
+    def persist_history(self, backend_version: str) -> int:
+        """Append current-run observations to persisted search history."""
+        self.history_path.parent.mkdir(parents=True, exist_ok=True)
+        existing: list[dict[str, Any]] = []
+        if self.history_path.exists():
+            try:
+                loaded = json.loads(self.history_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, list):
+                    existing = [x for x in loaded if isinstance(x, dict)]
+            except Exception:
+                existing = []
+
+        appended = 0
+        for rec in self._current_run_records:
+            item = dict(rec)
+            item["backend_version"] = str(backend_version)
+            existing.append(item)
+            appended += 1
+
+        # keep bounded history
+        max_keep = 5000
+        if len(existing) > max_keep:
+            existing = existing[-max_keep:]
+
+        self.history_path.write_text(json.dumps(existing, indent=2, default=str) + "\n", encoding="utf-8")
+        return appended
 
     def suggest(self, batch_size: int = 4) -> list[Candidate]:
         """Suggest the next batch of candidates using UCB acquisition.
@@ -319,10 +475,15 @@ class BayesianSearchOptimizer:
 
         X_obs = np.array(self._observed_X)
         Y_obs = np.array(self._observed_Y)
+        W_obs = np.array(self._observed_W if self._observed_W else [1.0] * len(self._observed_Y))
+        if len(W_obs) != len(Y_obs):
+            W_obs = np.ones_like(Y_obs)
 
         # Normalise Y for stable acquisition
-        y_mean = Y_obs.mean()
-        y_std = Y_obs.std() + 1e-8
+        w_sum = W_obs.sum() + 1e-8
+        y_mean = float((W_obs * Y_obs).sum() / w_sum)
+        y_var = float((W_obs * (Y_obs - y_mean) ** 2).sum() / w_sum)
+        y_std = math.sqrt(max(y_var, 0.0)) + 1e-8
         Y_norm = (Y_obs - y_mean) / y_std
 
         # Generate a large pool of random candidates
@@ -341,7 +502,7 @@ class BayesianSearchOptimizer:
         for xp in X_pool:
             # RBF kernel distances
             dists = np.sqrt(((X_obs - xp) ** 2).sum(axis=1))
-            weights = np.exp(-dists**2 / (2 * length_scale**2))
+            weights = np.exp(-dists**2 / (2 * length_scale**2)) * W_obs
             w_sum = weights.sum() + 1e-8
 
             # Predicted mean (weighted average of observed)
