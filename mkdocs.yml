@@ -1,0 +1,21 @@
+site_name: QOCC Documentation
+site_description: Quantum Observability + Contract-Based Compilation
+repo_url: https://github.com/zerocool26/Quantum-Observability-Contract-Compilation-QOCC-
+
+theme:
+  name: mkdocs
+
+nav:
+  - Home: index.md
+  - API Reference: api_reference.md
+  - Tutorials:
+      - Your first trace bundle: tutorials/first-trace-bundle.md
+      - Writing contracts: tutorials/writing-contracts.md
+      - Debugging regressions: tutorials/debugging-regressions.md
+      - Adding a custom adapter: tutorials/adding-custom-adapter.md
+  - Architecture:
+      - Trace model: architecture/trace-model.md
+      - Bundle format: architecture/bundle-format.md
+      - Search pipeline: architecture/search-pipeline.md
+  - Contracts: contracts/reference.md
+  - CLI Reference: cli/reference.md

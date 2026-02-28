@@ -1,0 +1,7 @@
+- repo: local
+  hooks:
+    - id: qocc-contract-check
+      name: QOCC Contract Check
+      entry: qocc contract check --bundle .qocc_baseline.zip --contracts contracts/ci_contracts.qocc
+      language: system
+      pass_filenames: false

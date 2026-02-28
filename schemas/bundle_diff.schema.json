@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BundleDiff",
+  "type": "object",
+  "properties": {
+    "metric_deltas": {
+        "type": "object",
+        "additionalProperties": {
+            "type": "object",
+            "properties": {
+                "a": {},
+                "b": {},
+                "pct_change": {"type": "number"}
+            }
+        }
+    },
+    "contract_regressions": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "contract_type": {"type": "string"},
+                "status_a": {"type": "string"},
+                "status_b": {"type": "string"},
+                "details": {"type": "string"}
+            }
+        }
+    },
+    "pass_log_diffs": {
+        "type": "array"
+    },
+    "env_diffs": {
+        "type": "object"
+    },
+    "circuit_hash_change": {
+        "type": "boolean"
+    },
+    "regression_cause": {
+        "type": "string",
+        "enum": ["TOOL_VERSION", "PASS_PARAM", "SEED", "ROUTING", "UNKNOWN"]
+    }
+  },
+  "required": [
+    "metric_deltas",
+    "contract_regressions",
+    "pass_log_diffs",
+    "env_diffs",
+    "circuit_hash_change",
+    "regression_cause"
+  ]
+}

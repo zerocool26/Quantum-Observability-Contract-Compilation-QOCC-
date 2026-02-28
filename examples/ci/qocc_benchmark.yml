@@ -1,0 +1,111 @@
+name: QOCC Nightly Benchmark
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      adapter:
+        description: "QOCC adapter (qiskit/cirq/tket/stim/ibm)"
+        required: false
+        default: "qiskit"
+      circuit_path:
+        description: "Primary circuit path to include in benchmark manifest"
+        required: false
+        default: "examples/ghz.qasm"
+      contract_file:
+        description: "Optional contracts JSON or .qocc file"
+        required: false
+        default: "examples/contracts_examples.json"
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all]"
+
+      - name: Build benchmark manifest
+        run: |
+          mkdir -p .github/tmp
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          adapter = "${{ github.event.inputs.adapter || 'qiskit' }}"
+          primary = Path("${{ github.event.inputs.circuit_path || 'examples/ghz.qasm' }}")
+          circuits = [{"id": primary.stem, "input": str(primary), "adapter": adapter}]
+
+          fallback = Path('examples/ghz.qasm')
+          if fallback != primary and fallback.exists():
+              circuits.append({"id": 'ghz', "input": str(fallback), "adapter": adapter})
+
+          manifest = {
+              "defaults": {
+                  "adapter": adapter,
+                  "top_k": 5,
+                  "simulation_shots": 1024,
+                  "mode": "single"
+              },
+              "circuits": circuits,
+          }
+          Path('.github/tmp/qocc_benchmark_manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+          PY
+
+      - name: Run batch benchmark search
+        run: |
+          qocc compile batch --manifest .github/tmp/qocc_benchmark_manifest.json --workers 2 --out benchmark.zip
+
+      - name: Optional contract check on first circuit bundle
+        run: |
+          CONTRACTS="${{ github.event.inputs.contract_file || 'examples/contracts_examples.json' }}"
+          FIRST_BUNDLE=$(find benchmark/batch/circuit_bundles -name '*.zip' | head -n 1)
+          if [ -n "$FIRST_BUNDLE" ] && [ -f "$CONTRACTS" ]; then
+            qocc contract check --bundle "$FIRST_BUNDLE" --contracts "$CONTRACTS"
+          fi
+
+      - name: Post benchmark metric table to summary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          summary_file = Path('.github/tmp/benchmark_summary.md')
+          cross_path = Path('benchmark/cross_circuit_metrics.json')
+          data = json.loads(cross_path.read_text(encoding='utf-8'))
+          rows = data.get('rows', [])
+          agg = data.get('aggregate', {})
+
+          lines = [
+              '## QOCC Nightly Benchmark',
+              '',
+              f"- Circuits: {agg.get('count', len(rows))}",
+              f"- Successful: {agg.get('ok', 0)}",
+              f"- Failed: {agg.get('error', 0)}",
+              f"- Avg selected score: {agg.get('avg_selected_score', 0):.4f}",
+              '',
+              '| Circuit | Status | Candidates | Validated | Feasible | Score |',
+              '|---|---:|---:|---:|---:|---:|',
+          ]
+          for row in rows:
+              lines.append(
+                  f"| {row.get('id', '-') } | {row.get('status', '-') } | {row.get('num_candidates', '-') } | {row.get('num_validated', '-') } | {row.get('feasible', '-') } | {row.get('selected_score', '-') } |"
+              )
+
+          summary_file.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          print(summary_file.read_text(encoding='utf-8'))
+          PY
+          cat .github/tmp/benchmark_summary.md >> "$GITHUB_STEP_SUMMARY"

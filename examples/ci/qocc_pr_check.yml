@@ -1,0 +1,113 @@
+name: QOCC PR Check
+
+on:
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      adapter:
+        description: "QOCC adapter (qiskit/cirq/tket/stim/ibm)"
+        required: false
+        default: "qiskit"
+      circuit_path:
+        description: "Path to input circuit"
+        required: false
+        default: "examples/ghz.qasm"
+      contract_file:
+        description: "Path to contracts JSON or .qocc file"
+        required: false
+        default: "examples/contracts_examples.json"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  pr-compare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+
+      - name: Checkout main baseline reference
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: main_ref
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all]"
+
+      - name: Build baseline bundle from main
+        run: |
+          ADAPTER="${{ github.event.inputs.adapter || 'qiskit' }}"
+          CIRCUIT_REL="${{ github.event.inputs.circuit_path || 'examples/ghz.qasm' }}"
+          qocc trace run --adapter "$ADAPTER" --input "main_ref/$CIRCUIT_REL" --out baseline_main.zip
+
+      - name: Build candidate bundle from PR
+        run: |
+          ADAPTER="${{ github.event.inputs.adapter || 'qiskit' }}"
+          CIRCUIT_REL="${{ github.event.inputs.circuit_path || 'examples/ghz.qasm' }}"
+          qocc trace run --adapter "$ADAPTER" --input "$CIRCUIT_REL" --out baseline_pr.zip
+
+      - name: Optional contract checks
+        run: |
+          CONTRACTS="${{ github.event.inputs.contract_file || 'examples/contracts_examples.json' }}"
+          if [ -f "$CONTRACTS" ]; then
+            qocc contract check --bundle baseline_main.zip --contracts "$CONTRACTS"
+            qocc contract check --bundle baseline_pr.zip --contracts "$CONTRACTS"
+          fi
+
+      - name: Compare bundles and build PR comment body
+        run: |
+          qocc trace compare baseline_main.zip baseline_pr.zip --format json > diff.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          diff = json.loads(Path('diff.json').read_text(encoding='utf-8'))
+          metrics = diff.get('diffs', {}).get('metrics', {})
+          reg = diff.get('regression_analysis', {})
+
+          lines = [
+              '## QOCC PR Bundle Comparison',
+              '',
+              f"- Severity: **{reg.get('severity', 'unknown')}**",
+              f"- Summary: {reg.get('summary', 'n/a')}",
+              '',
+              '| Stage | Metric | Base | PR | % Change |',
+              '|---|---|---:|---:|---:|',
+          ]
+
+          had_rows = False
+          for stage, stage_diff in metrics.items():
+              for metric, values in stage_diff.items():
+                  had_rows = True
+                  pct = values.get('pct_change')
+                  pct_str = f"{pct:.2f}%" if isinstance(pct, (int, float)) else '-'
+                  lines.append(
+                      f"| {stage} | {metric} | {values.get('a', '-') } | {values.get('b', '-') } | {pct_str} |"
+                  )
+
+          if not had_rows:
+              lines.append('| - | - | - | - | - |')
+
+          Path('qocc_pr_comment.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+
+      - name: Post PR comment with gh CLI
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file qocc_pr_comment.md
+
+      - name: Add summary
+        run: cat qocc_pr_comment.md >> "$GITHUB_STEP_SUMMARY"

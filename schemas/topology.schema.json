@@ -1,0 +1,30 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "title": "TopologyGraph",
+    "properties": {
+      "nodes": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "qubit": { "type": "integer" },
+            "t1": { "type": "number" },
+            "t2": { "type": "number" },
+            "readout_fidelity": { "type": "number" }
+          },
+          "required": ["qubit"]
+        }
+      },
+      "edges": {
+        "type": "array",
+        "items": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    "required": ["nodes", "edges"]
+  }

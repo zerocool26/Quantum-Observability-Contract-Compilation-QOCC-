@@ -1,0 +1,66 @@
+name: QOCC Baseline
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      adapter:
+        description: "QOCC adapter (qiskit/cirq/tket/stim/ibm)"
+        required: false
+        default: "qiskit"
+      circuit_path:
+        description: "Path to input circuit"
+        required: false
+        default: "examples/ghz.qasm"
+      contract_file:
+        description: "Path to contracts JSON or .qocc file"
+        required: false
+        default: "examples/contracts_examples.json"
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all]"
+
+      - name: Generate baseline bundle + ingest DB
+        run: |
+          ADAPTER="${{ github.event.inputs.adapter || 'qiskit' }}"
+          CIRCUIT="${{ github.event.inputs.circuit_path || 'examples/ghz.qasm' }}"
+          qocc trace run --adapter "$ADAPTER" --input "$CIRCUIT" --out .qocc_baseline.zip --db --db-path .qocc_regression.db
+
+      - name: Check contracts
+        run: |
+          CONTRACTS="${{ github.event.inputs.contract_file || 'examples/contracts_examples.json' }}"
+          qocc contract check --bundle .qocc_baseline.zip --contracts "$CONTRACTS"
+
+      - name: Tag baseline run
+        run: qocc db tag .qocc_baseline.zip --tag baseline --db-path .qocc_regression.db
+
+      - name: Detect regressions vs baseline tag
+        run: |
+          python - <<'PY'
+          import json
+          from qocc.core.regression_db import RegressionDatabase
+
+          db = RegressionDatabase('.qocc_regression.db')
+          report = db.detect_regressions('.qocc_baseline.zip', baseline_tag='baseline', delta_threshold=0.05)
+          print(json.dumps(report, indent=2))
+          if report.get('has_regressions'):
+              raise SystemExit('Regressions detected against baseline tag.')
+          PY
