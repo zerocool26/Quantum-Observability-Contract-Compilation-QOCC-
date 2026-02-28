@@ -103,7 +103,7 @@
 
 ### Advanced features:
 - [x] GPU simulation backend integration
-- [ ] QEC sampling mode
+- [x] QEC sampling mode
 - [x] CI/CD integration guides and GitHub Actions templates
 - [x] OpenTelemetry OTLP JSON export (bridge to existing observability stacks)
 - [x] Bayesian optimization for compilation search (`--strategy bayesian`)
