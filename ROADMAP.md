@@ -102,7 +102,7 @@
 - [x] Project bootstrap wizard (`qocc init` with contracts/pipeline/CI scaffolding)
 
 ### Advanced features:
-- [ ] GPU simulation backend integration
+- [x] GPU simulation backend integration
 - [ ] QEC sampling mode
 - [x] CI/CD integration guides and GitHub Actions templates
 - [x] OpenTelemetry OTLP JSON export (bridge to existing observability stacks)
