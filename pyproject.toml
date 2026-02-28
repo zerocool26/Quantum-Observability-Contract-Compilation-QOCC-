@@ -34,13 +34,15 @@ stim = ["stim>=1.12", "pymatching>=2.0"]
 qec = ["stim>=1.12", "pymatching>=2.0"]
 ibm = ["qiskit>=1.0", "qiskit-ibm-runtime>=0.34"]
 jupyter = ["ipywidgets>=8.0", "plotly>=5.20"]
+signing = ["cryptography>=42.0"]
+otel = ["opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp-proto-grpc"]
 dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",
     "ruff>=0.4",
     "mypy>=1.8",
 ]
-all = ["qocc[qiskit,cirq,tket,stim,ibm,jupyter,dev]"]
+all = ["qocc[qiskit,cirq,tket,stim,ibm,jupyter,signing,otel,dev]"]
 
 [project.scripts]
 qocc = "qocc.cli.main:cli"

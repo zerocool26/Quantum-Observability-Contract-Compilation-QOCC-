@@ -147,6 +147,10 @@ def run_trace(
     output: str | None = None,
     seeds: dict[str, Any] | None = None,
     repeat: int = 1,
+    otel_endpoint: str | None = None,
+    otel_headers: dict[str, str] | None = None,
+    compress: str = "deflate",
+    max_bundle_size_mb: float | None = None,
 ) -> dict[str, Any]:
     """Run an instrumented compilation trace and produce a Trace Bundle.
 
@@ -166,7 +170,20 @@ def run_trace(
         raise ValueError(f"repeat must be >= 1, got {repeat}")
 
     run_id = uuid.uuid4().hex[:12]
-    emitter = TraceEmitter()
+    
+    otel_exporter = None
+    if otel_endpoint:
+        try:
+            from qocc.trace.exporters import OTLPLiveExporter
+            otel_exporter = OTLPLiveExporter(endpoint=otel_endpoint, headers=otel_headers)
+        except ImportError:
+            logger.warning("opentelemetry not installed, skipping real-time export")
+            otel_exporter = None
+
+    if otel_exporter:
+        emitter = TraceEmitter(on_span_started=otel_exporter.on_span_started, on_span_finished=otel_exporter.on_span_finished)
+    else:
+        emitter = TraceEmitter()
 
     if seeds is None:
         seeds = {
@@ -390,7 +407,7 @@ def run_trace(
 
     # 10. Zip
     with emitter.span("export_zip") as span:
-        final_zip = store.export_zip(zip_path)
+        final_zip = store.export_zip(zip_path, compress=compress, max_size_mb=max_bundle_size_mb)
         span.set_attribute("zip_path", str(final_zip))
 
     # Re-write trace with all spans (including the zip span)
@@ -408,6 +425,9 @@ def run_trace(
     }
     if nondet_report:
         result_dict["nondeterminism"] = nondet_report
+
+    if otel_exporter:
+        otel_exporter.flush()
 
     return result_dict
 
@@ -552,6 +572,57 @@ def compare_bundles(
     regression = _analyze_regression_causes(bundle_a, bundle_b, metrics_diff, env_diff)
     report["regression_analysis"] = regression
 
+    # Build structured BundleDiff
+    from qocc.core.bundle_diff import BundleDiff
+    
+    # Contract regressions: finding previously passing contracts that now fail
+    contract_regressions = []
+    
+    # Match contracts by type or summary string
+    for cb in cr_b:
+        ctype = cb.get("contract_type", "unknown")
+        status_b = cb.get("status", "FAIL")
+        # Find matching in A
+        match_a = next((ca for ca in cr_a if ca.get("contract_type") == ctype), None)
+        status_a = match_a.get("status", "UNKNOWN") if match_a else "UNKNOWN"
+        
+        if status_a == "PASS" and status_b != "PASS":
+            contract_regressions.append({
+                "contract_type": ctype,
+                "status_a": status_a,
+                "status_b": status_b,
+                "details": f"Regression detected in {ctype} limit/metric."
+            })
+            
+    pass_log_diffs = []
+    if pass_diff and pass_diff.get("opcodes"):
+        pass_log_diffs = pass_diff["opcodes"]
+        
+    circuit_hash_change = len(hash_changed) > 0
+    
+    # Simple heuristic to convert _analyze_regression_causes info into ENUM
+    regression_cause = "UNKNOWN"
+    if regression:
+        factors = regression.get("primary_factors", [])
+        if "env" in factors or "packages" in factors:
+            regression_cause = "TOOL_VERSION"
+        elif "seeds" in factors:
+            regression_cause = "SEED"
+        elif "pass_log" in factors:
+            regression_cause = "ROUTING"  # fallback or pass change
+        elif "unknown" not in factors and len(factors) > 0:
+            regression_cause = "PASS_PARAM"
+            
+    b_diff = BundleDiff(
+        metric_deltas=metrics_diff.get("compiled", {}),
+        contract_regressions=contract_regressions,
+        pass_log_diffs=pass_log_diffs,
+        env_diffs=env_diff,
+        circuit_hash_change=circuit_hash_change,
+        regression_cause=regression_cause,
+    )
+    report["bundle_diff"] = b_diff.to_dict()
+
     # Generate markdown report
     md = _generate_comparison_md(report)
     report["markdown"] = md
@@ -561,6 +632,9 @@ def compare_bundles(
         out.mkdir(parents=True, exist_ok=True)
         (out / "comparison.json").write_text(
             json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8"
+        )
+        (out / "diff.json").write_text(
+            json.dumps(report["bundle_diff"], indent=2, default=str) + "\n", encoding="utf-8"
         )
         (out / "comparison.md").write_text(md, encoding="utf-8")
 
@@ -953,6 +1027,7 @@ def _evaluate_check_contract_leaf(
     from qocc.contracts.eval_clifford import evaluate_clifford_contract
     from qocc.contracts.eval_qec import evaluate_qec_contract
     from qocc.contracts.eval_zne import evaluate_zne_contract
+    from qocc.contracts.eval_qpt import evaluate_qpt_contract
     from qocc.contracts.registry import get_evaluator
     from qocc.contracts.spec import ContractResult
 
@@ -1055,6 +1130,27 @@ def _evaluate_check_contract_leaf(
                 "logical_error_rates": bundle.get("logical_error_rates"),
                 "decoder_stats": bundle.get("decoder_stats"),
             },
+        )
+
+    if spec.type == "topology_violations":
+        from qocc.contracts.eval_topology import evaluate_topology_contract
+        return evaluate_topology_contract(spec, compiled_metrics)
+
+    if spec.type == "qpt":
+        if compiled_handle:
+            try:
+                from qocc.contracts.eval_qpt import evaluate_qpt_contract
+                return evaluate_qpt_contract(adapter, compiled_handle, spec, ideal_circuit=input_handle)
+            except Exception as e:
+                return ContractResult(
+                    name=spec.name,
+                    passed=False,
+                    details={"type": "qpt", "error": str(e)}
+                )
+        return ContractResult(
+            name=spec.name,
+            passed=False,
+            details={"type": "qpt", "error": "Compiled handle not available."}
         )
 
     if spec.type == "zne":
@@ -1614,6 +1710,7 @@ def search_compile(
             from qocc.contracts.eval_clifford import evaluate_clifford_contract
             from qocc.contracts.eval_qec import evaluate_qec_contract
             from qocc.contracts.eval_zne import evaluate_zne_contract
+            from qocc.contracts.eval_qpt import evaluate_qpt_contract
             from qocc.contracts.parametric import resolve_contract_spec, ParametricResolutionError
             from qocc.contracts.spec import ContractResult
             from qocc.contracts.registry import get_evaluator
@@ -1786,6 +1883,30 @@ def search_compile(
                             compiled_metrics=candidate.metrics,
                             simulation_metadata=sim_meta,
                         )
+                    if spec_eval.type == "topology_violations":
+                        from qocc.contracts.eval_topology import evaluate_topology_contract
+                        result_obj = evaluate_topology_contract(spec_eval, candidate.metrics)
+                    if spec_eval.type == "qpt":
+                        if compiled_handle is None:
+                            result_obj = ContractResult(
+                                name=spec_eval.name,
+                                passed=False,
+                                details={"type": "qpt", "error": "No compiled handle available."},
+                            )
+                        else:
+                            try:
+                                result_obj = evaluate_qpt_contract(
+                                    adapter, 
+                                    compiled_handle, 
+                                    spec_eval, 
+                                    ideal_circuit=normalized
+                                )
+                            except Exception as exc:
+                                result_obj = ContractResult(
+                                    name=spec_eval.name,
+                                    passed=False,
+                                    details={"type": "qpt", "error": str(exc)},
+                                )
                     if spec_eval.type == "zne":
                         baseline_counts_local = baseline_counts
                         if baseline_counts_local is None:

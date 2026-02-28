@@ -300,6 +300,51 @@ def _evaluate_distribution_once(
             },
         )
 
+    if test_method == "kolmogorov_smirnov":
+        from qocc.contracts.stats import kolmogorov_smirnov_test
+        alpha = 1.0 - confidence_level
+        ks_result = kolmogorov_smirnov_test(counts_before, counts_after, alpha=alpha)
+        return ContractResult(
+            name=spec.name,
+            passed=ks_result["passed"],
+            details={
+                "method": "kolmogorov_smirnov",
+                "statistic": ks_result["statistic"],
+                "p_value": ks_result["p_value"],
+                "alpha": alpha,
+            },
+        )
+        
+    if test_method == "jensen_shannon":
+        from qocc.contracts.stats import jensen_shannon_divergence
+        jsd = jensen_shannon_divergence(counts_before, counts_after)
+        passed = jsd <= tolerance
+        return ContractResult(
+            name=spec.name,
+            passed=passed,
+            details={
+                "method": "jensen_shannon",
+                "divergence": jsd,
+                "tolerance": tolerance,
+            },
+        )
+        
+    if test_method == "permutation":
+        from qocc.contracts.stats import permutation_test
+        alpha = 1.0 - confidence_level
+        n_perm = int(spec.resource_budget.get("n_permutations", 1000))
+        perm_result = permutation_test(counts_before, counts_after, alpha=alpha, n_permutations=n_perm, seed=seed)
+        return ContractResult(
+            name=spec.name,
+            passed=perm_result["passed"],
+            details={
+                "method": "permutation",
+                "statistic": perm_result["statistic"],
+                "p_value": perm_result["p_value"],
+                "alpha": alpha,
+            },
+        )
+
     # Default: TVD bootstrap
     tvd_point = total_variation_distance(counts_before, counts_after)
     ci = tvd_bootstrap_ci(

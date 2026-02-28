@@ -33,6 +33,25 @@ ruff check .
 mypy qocc/
 ```
 
+### Optional: Pre-Commit Hook Integration
+
+QOCC provides a ready-to-copy pre-commit hook template at
+`examples/ci/pre_commit_config.yaml`.
+
+To enable it in your repo:
+
+1. Copy the template content into your `.pre-commit-config.yaml`.
+2. Ensure your baseline bundle and CI contracts are present:
+  - `.qocc_baseline.zip`
+  - `contracts/ci_contracts.qocc`
+3. Install and run pre-commit:
+
+```bash
+pip install pre-commit
+pre-commit install
+pre-commit run --all-files
+```
+
 ## Code Standards
 
 ### Type Hints

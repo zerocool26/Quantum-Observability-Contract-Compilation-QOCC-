@@ -12,6 +12,9 @@ __all__ = [
     "hash_string",
     "RegressionDatabase",
     "replay_bundle",
+    "sign_bundle",
+    "verify_bundle",
+    "VerificationResult",
 ]
 
 from qocc.core.artifacts import ArtifactStore
@@ -21,3 +24,4 @@ from qocc.core.circuit_handle import CircuitHandle, PipelineSpec
 from qocc.core.hashing import hash_dict, hash_string
 from qocc.core.regression_db import RegressionDatabase
 from qocc.core.replay import replay_bundle
+from qocc.core.signing import VerificationResult, sign_bundle, verify_bundle

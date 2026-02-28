@@ -21,7 +21,9 @@
           "exact",
           "cost",
           "qec",
-          "zne"
+          "zne",
+          "qpt",
+          "topology_violations"
         ]
       },
       "spec": {

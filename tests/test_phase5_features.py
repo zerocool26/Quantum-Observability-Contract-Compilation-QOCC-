@@ -504,7 +504,7 @@ class TestContractType:
 
     def test_valid_contract_types_frozenset(self):
         assert isinstance(VALID_CONTRACT_TYPES, frozenset)
-        assert len(VALID_CONTRACT_TYPES) == 7
+        assert len(VALID_CONTRACT_TYPES) == 9
 
     def test_spec_type_valid_flag(self):
         spec = ContractSpec(name="ok", type="observable")

@@ -40,6 +40,12 @@ def trace() -> None:
               help="Generate interactive HTML report for the output bundle.")
 @click.option("--html-out", type=click.Path(), default=None,
               help="Output path for HTML report (used with --html).")
+@click.option("--otel-endpoint", type=str, default=None,
+              help="OTLP gRPC endpoint for real-time span streaming (e.g. http://localhost:4317).")
+@click.option("--compress", type=click.Choice(["none", "deflate", "zstd", "lz4"]), default="deflate",
+              help="Bundle compression format.")
+@click.option("--max-bundle-size-mb", type=float, default=None,
+              help="Abort trace generation if bundle exceeds this limit.")
 def trace_run(
     adapter: str,
     input_path: str,
@@ -51,6 +57,9 @@ def trace_run(
     db_path: str | None,
     emit_html: bool,
     html_out: str | None,
+    otel_endpoint: str | None,
+    compress: str,
+    max_bundle_size_mb: float | None,
 ) -> None:
     """Run an instrumented compilation trace and produce a Trace Bundle."""
     from qocc.api import run_trace
@@ -76,6 +85,9 @@ def trace_run(
             output=output,
             seeds=seeds,
             repeat=repeat,
+            otel_endpoint=otel_endpoint,
+            compress=compress,
+            max_bundle_size_mb=max_bundle_size_mb,
         )
     except ImportError as exc:
         console.print(f"[red]Error:[/red] {exc}")

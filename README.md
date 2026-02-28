@@ -16,6 +16,7 @@
 - **Plugin system** — Register custom adapters and evaluators via Python entry points
 - **Hardware execution interface** — Optional adapter `execute()` API with structured `ExecutionResult` metadata
 - **Mitigation pipeline stage** — Optional `mitigation` stage with trace spans and overhead telemetry
+- **Bundle signing & provenance** — Ed25519 signing/verification for trace-bundle authenticity
 
 ## Quick Start
 
@@ -94,8 +95,19 @@ qocc db ingest bundle.zip
 qocc db query --adapter qiskit --since 2026-01-01
 qocc db tag bundle.zip --tag baseline
 
+# CI template workflows
+# copy examples/ci/qocc_baseline.yml, examples/ci/qocc_benchmark.yml,
+# and examples/ci/qocc_pr_check.yml into .github/workflows/
+
+# Bundle signing (requires: pip install -e ".[signing]")
+qocc bundle sign --key ./ed25519_private.pem bundle.zip
+qocc bundle verify --key ./ed25519_public.pem bundle.zip
+
 # Notebook helpers (inside Python/Jupyter)
 python -c "import qocc; print(qocc.show_bundle('bundle.zip'))"
+
+# Bootstrap project defaults (contracts, pipeline, CI workflow, tool.qocc config)
+qocc init --yes --adapter qiskit
 ```
 
 ## Architecture
@@ -319,6 +331,50 @@ produces a batch bundle with:
 - cross-circuit summary table in `cross_circuit_metrics.json`
 - top-level batch trace span attributes: `n_circuits`, `n_cache_hits`,
   `total_candidates_evaluated`
+
+### CI Workflow Templates
+
+Template GitHub Actions workflows are provided in `examples/ci/`:
+
+- `qocc_baseline.yml` — push/dispatch baseline trace + contract check + DB ingest
+- `qocc_benchmark.yml` — nightly/dispatch batch benchmark with summary table
+- `qocc_pr_check.yml` — PR/dispatch bundle diff and PR comment via `gh`
+
+All templates include `workflow_dispatch` inputs for `adapter`,
+`circuit_path`, and `contract_file`.
+
+### Project Init Wizard
+
+Use `qocc init` to bootstrap a repository with sensible defaults:
+
+- backend detection for qiskit/cirq/tket/stim
+- generated `contracts/default_contracts.qocc`
+- generated adapter-specific pipeline JSON under `pipeline_examples/`
+- generated `.github/workflows/qocc_ci.yml`
+- persisted defaults in `pyproject.toml` under `[tool.qocc]`
+
+Examples:
+
+```bash
+qocc init --yes --adapter qiskit
+qocc init --project-root ./my_quantum_project
+qocc init --force --run-demo
+```
+
+### Developer Documentation Site
+
+QOCC now includes a MkDocs-compatible docs scaffold under `docs/` with:
+
+- generated API reference (`docs/api_reference.md`)
+- tutorials for trace/contracts/regression debugging/custom adapters
+- architecture deep dives (trace model, bundle format, search pipeline)
+- contract and CLI reference pages
+
+Regenerate API docs from docstrings:
+
+```bash
+python docs/generate_api_reference.py
+```
 
 ### Pareto Multi-Objective Selection
 

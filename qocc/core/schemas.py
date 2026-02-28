@@ -272,6 +272,22 @@ DECODER_STATS_SCHEMA: dict[str, Any] = {
     "additionalProperties": True,
 }
 
+SIGNATURE_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "QOCC Bundle Signature",
+    "type": "object",
+    "required": ["algorithm", "signer", "timestamp", "manifest_hash", "signature"],
+    "properties": {
+        "algorithm": {"type": "string", "enum": ["ed25519"]},
+        "signer": {"type": "string"},
+        "timestamp": {"type": "string", "format": "date-time"},
+        "manifest_hash": {"type": "string"},
+        "signature": {"type": "string"},
+        "public_key_fingerprint": {"type": ["string", "null"]},
+    },
+    "additionalProperties": True,
+}
+
 NOISE_MODEL_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "QOCC Noise Model",
@@ -346,6 +362,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "logical_error_rates": LOGICAL_ERROR_RATES_SCHEMA,
     "decoder_stats": DECODER_STATS_SCHEMA,
     "noise_model": NOISE_MODEL_SCHEMA,
+    "signature": SIGNATURE_SCHEMA,
 }
 
 
@@ -414,6 +431,7 @@ def validate_bundle(bundle_dir: str | Path) -> dict[str, list[str]]:
         "dem.json": "dem",
         "logical_error_rates.json": "logical_error_rates",
         "decoder_stats.json": "decoder_stats",
+        "signature.json": "signature",
     }
     for fname, schema_name in optional_maps.items():
         fp = root / fname

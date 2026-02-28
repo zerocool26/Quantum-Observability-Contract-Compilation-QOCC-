@@ -138,6 +138,8 @@ def export_otlp_json(
 
     scope_spans = []
     for trace_id, trace_spans in traces.items():
+        # Sort trace_spans by start_time so parents come before children
+        trace_spans = sorted(trace_spans, key=lambda s: s.start_time or "")
         otlp_spans = [_span_to_otlp(s, service_name) for s in trace_spans]
         scope_spans.append({
             "scope": {
@@ -189,8 +191,11 @@ def export_to_otel_sdk(spans: list[Span]) -> bool:
     # Build a map of QOCC spans by span_id for parent resolution
     id_map: dict[str, Any] = {}
 
+    # Sort spans by start time so parents are processed before children
+    sorted_spans = sorted(spans, key=lambda s: s.start_time or "")
+
     # Process in order, creating OTel spans
-    for s in spans:
+    for s in sorted_spans:
         ctx = None
         if s.parent_span_id and s.parent_span_id in id_map:
             ctx = otel_trace.set_span_in_context(id_map[s.parent_span_id])
@@ -225,3 +230,167 @@ def _otel_safe_value(v: Any) -> str | int | float | bool:
     if isinstance(v, (str, int, float, bool)):
         return v
     return str(v)
+
+
+def export_otlp_grpc(
+    spans: list[Span],
+    endpoint: str,
+    headers: dict[str, str] | None = None,
+    service_name: str = "qocc-grpc",
+) -> bool:
+    """Stream spans to an OTLP-compatible collector via gRPC.
+
+    Requires ``opentelemetry-exporter-otlp-proto-grpc`` to be installed.
+    """
+    try:
+        from opentelemetry import trace as otel_trace
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.trace import StatusCode
+    except ImportError:
+        return False
+
+    resource = Resource.create(
+        {
+            "service.name": service_name,
+            "telemetry.sdk.name": "qocc",
+            "telemetry.sdk.language": "python",
+        }
+    )
+
+    provider = TracerProvider(resource=resource)
+    
+    exporter_kwargs: dict[str, Any] = {"endpoint": endpoint, "insecure": endpoint.startswith("http://") or ":80" in endpoint or ":4317" in endpoint}
+    if headers:
+        exporter_kwargs["headers"] = headers
+        
+    exporter = OTLPSpanExporter(**exporter_kwargs)
+    processor = SimpleSpanProcessor(exporter)
+    provider.add_span_processor(processor)
+
+    tracer = provider.get_tracer("qocc.trace", "0.1.0")
+    id_map: dict[str, Any] = {}
+
+    sorted_spans = sorted(spans, key=lambda s: s.start_time or "")
+
+    for s in sorted_spans:
+        ctx = None
+        if s.parent_span_id and s.parent_span_id in id_map:
+            ctx = otel_trace.set_span_in_context(id_map[s.parent_span_id])
+
+        # Semantic conventions for QOCC
+        attrs = {k: _otel_safe_value(v) for k, v in s.attributes.items()}
+        # Ensure we bubble up standard attributes if present in the top-level span but maybe missing from conventions
+        for k in ["adapter", "circuit_hash", "n_qubits"]:
+            if k in s.attributes and f"quantum.{k}" not in attrs:
+                attrs[f"quantum.{k}"] = _otel_safe_value(s.attributes[k])
+
+        otel_span = tracer.start_span(
+            name=s.name,
+            context=ctx,
+            attributes=attrs,
+            start_time=_iso_to_unix_nano(s.start_time)
+        )
+
+        for ev in s.events:
+            otel_span.add_event(
+                ev.name,
+                attributes={k: _otel_safe_value(v) for k, v in ev.attributes.items()},
+                timestamp=_iso_to_unix_nano(ev.timestamp)
+            )
+
+        if s.status == "ERROR":
+            otel_span.set_status(StatusCode.ERROR)
+        elif s.status == "OK":
+            otel_span.set_status(StatusCode.OK)
+
+        otel_span.end(end_time=_iso_to_unix_nano(s.end_time))
+        id_map[s.span_id] = otel_span
+
+    provider.force_flush()
+    return True
+
+
+class OTLPLiveExporter:
+    """Real-time OpenTelemetry Exporter using gRPC."""
+
+    def __init__(self, endpoint: str, headers: dict[str, str] | None = None, service_name: str = "qocc-grpc"):
+        from opentelemetry import trace as otel_trace
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+        resource = Resource.create({
+            "service.name": service_name,
+            "telemetry.sdk.name": "qocc",
+            "telemetry.sdk.language": "python",
+        })
+        self.provider = TracerProvider(resource=resource)
+        
+        exporter_kwargs: dict[str, Any] = {"endpoint": endpoint, "insecure": endpoint.startswith("http://") or ":80" in endpoint or ":4317" in endpoint}
+        if headers:
+            exporter_kwargs["headers"] = headers
+            
+        exporter = OTLPSpanExporter(**exporter_kwargs)
+        self.provider.add_span_processor(SimpleSpanProcessor(exporter))
+        self.tracer = self.provider.get_tracer("qocc.trace", "0.1.0")
+        
+        self.otel_trace = otel_trace
+        self.id_map: dict[str, Any] = {}
+
+    def on_span_started(self, span: Span) -> None:
+        ctx = None
+        if span.parent_span_id and span.parent_span_id in self.id_map:
+            ctx = self.otel_trace.set_span_in_context(self.id_map[span.parent_span_id])
+            
+        attrs = {k: _otel_safe_value(v) for k, v in span.attributes.items()}
+        for k in ["adapter", "circuit_hash", "n_qubits"]:
+            if k in span.attributes and f"quantum.{k}" not in attrs:
+                attrs[f"quantum.{k}"] = _otel_safe_value(span.attributes[k])
+                
+        otel_span = self.tracer.start_span(
+            name=span.name,
+            context=ctx,
+            attributes=attrs,
+            start_time=_iso_to_unix_nano(span.start_time)
+        )
+        self.id_map[span.span_id] = otel_span
+
+    def on_span_finished(self, span: Span) -> None:
+        from opentelemetry.trace import StatusCode
+        
+        otel_span = self.id_map.get(span.span_id)
+        if not otel_span:
+            return
+            
+        # Update attributes which might have been added after start
+        for k, v in span.attributes.items():
+            otel_span.set_attribute(k, _otel_safe_value(v))
+            
+        for k in ["adapter", "circuit_hash", "n_qubits"]:
+            if k in span.attributes:
+                otel_span.set_attribute(f"quantum.{k}", _otel_safe_value(span.attributes[k]))
+
+        for ev in span.events:
+            otel_span.add_event(
+                ev.name,
+                attributes={k: _otel_safe_value(v) for k, v in ev.attributes.items()},
+                timestamp=_iso_to_unix_nano(ev.timestamp)
+            )
+
+        if span.status == "ERROR":
+            otel_span.set_status(StatusCode.ERROR)
+        elif span.status == "OK":
+            otel_span.set_status(StatusCode.OK)
+
+        otel_span.end(end_time=_iso_to_unix_nano(span.end_time))
+        # Remove from id_map to avoid memory leak? Wait, child spans might still need it to set context.
+        # Don't pop it immediately.
+
+    def flush(self) -> None:
+        self.provider.force_flush()
+
+

@@ -2,6 +2,80 @@
 
 All notable changes to the QOCC project are documented here.
 
+## [Unreleased] — Phase 16 (GitHub Actions CI Templates)
+
+### Added
+- **CI workflow templates** in `examples/ci/`:
+  - `qocc_baseline.yml` — push/dispatch baseline trace + contract check + DB ingest
+  - `qocc_benchmark.yml` — nightly/dispatch batch benchmark with metrics summary
+  - `qocc_pr_check.yml` — PR/dispatch baseline-vs-PR comparison + PR comment using `gh`
+- **Parameterized dispatch inputs** in each template:
+  `adapter`, `circuit_path`, `contract_file`.
+
+### Validation
+- Template workflows added and wired to existing CLI commands and APIs.
+
+## [Unreleased] — Phase 16 (Pre-Commit + Project Init Wizard)
+
+### Added
+- **Pre-commit hook template**: `examples/ci/pre_commit_config.yaml`
+  with `qocc-contract-check` local hook.
+- **New CLI command**: `qocc init` wizard (`qocc.cli.commands_init`) that:
+  - detects installed backends (qiskit/cirq/tket/stim)
+  - generates `contracts/default_contracts.qocc`
+  - generates `pipeline_examples/<adapter>_default.json`
+  - generates `.github/workflows/qocc_ci.yml`
+  - stores defaults in `pyproject.toml` under `[tool.qocc]`
+  - optionally runs a demo trace (`--run-demo`)
+
+### Changed
+- CLI root now registers `init` command in `qocc.cli.main`.
+- `CONTRIBUTING.md` now documents pre-commit integration workflow.
+
+### Validation
+- Added `tests/test_phase16_init.py`.
+
+## [Unreleased] — Phase 16 (Developer Documentation Scaffold)
+
+### Added
+- **MkDocs-compatible documentation scaffold**:
+  - `mkdocs.yml`
+  - `docs/index.md`
+  - tutorial pages in `docs/tutorials/`
+  - architecture pages in `docs/architecture/`
+  - `docs/contracts/reference.md`
+  - `docs/cli/reference.md`
+- **Auto-generated API reference pipeline**:
+  - `docs/generate_api_reference.py`
+  - generated output at `docs/api_reference.md`
+
+### Validation
+- Added `tests/test_phase16_docs.py`.
+
+## [Unreleased] — Phase 17 (Bundle Signing & Provenance)
+
+### Added
+- **Signing API** in `qocc.core.signing`:
+  - `sign_bundle(bundle_path, private_key_path, signer_identity=None)`
+  - `verify_bundle(bundle_path, public_key_path)`
+  - `VerificationResult` dataclass
+- **CLI commands** under `qocc bundle`:
+  - `qocc bundle sign --key private.pem [--signer ...] bundle.zip`
+  - `qocc bundle verify --key public.pem [--format text|json] bundle.zip`
+- **Signature payload/schema** support:
+  - `signature.json` generation and loading
+  - `schemas/signature.schema.json`
+  - schema wiring in core + `qocc validate`
+- **Manifest provenance update** on signing:
+  signer identity, key fingerprint, timestamp, and signature-file pointer.
+
+### Changed
+- `ArtifactStore.load_bundle()` now loads optional `signature.json`.
+- Optional dependency extra added: `qocc[signing]` (`cryptography`).
+
+### Validation
+- Added `tests/test_phase17_signing.py`.
+
 ## [Unreleased] — Phase 15 (Error Mitigation Pipeline Stage)
 
 ### Added

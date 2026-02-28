@@ -31,6 +31,7 @@ _FILE_SCHEMA_MAP: dict[str, str] = {
     "dem.json": "dem",
     "logical_error_rates.json": "logical_error_rates",
     "decoder_stats.json": "decoder_stats",
+    "signature.json": "signature",
 }
 
 

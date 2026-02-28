@@ -22,9 +22,9 @@ def _run_compare(
     """Core comparison logic shared by ``trace compare`` and the legacy alias."""
     from qocc.api import compare_bundles
 
-    # In JSON mode every human-readable message goes to stderr so stdout is
+    # In JSON/diff mode every human-readable message goes to stderr so stdout is
     # pure, machine-parseable JSON.
-    out = _err_console if output_format == "json" else console
+    out = _err_console if output_format in ("json", "diff") else console
 
     out.print("[bold blue]QOCC Bundle Comparison[/bold blue]")
     out.print(f"  Bundle A: {bundle_a}")
@@ -40,13 +40,13 @@ def _run_compare(
     if output_format == "json":
         json_str = json.dumps(result, indent=2, default=str)
         click.echo(json_str)  # stdout only
-        if report_dir:
-            from pathlib import Path
+        return
 
-            Path(report_dir).mkdir(parents=True, exist_ok=True)
-            (Path(report_dir) / "comparison.json").write_text(
-                json_str + "\n", encoding="utf-8",
-            )
+    # ── DIFF output ────────────────────────────────────────────
+    if output_format == "diff":
+        b_diff = result.get("bundle_diff", {})
+        json_str = json.dumps(b_diff, indent=2, default=str)
+        click.echo(json_str)  # stdout only
         return
 
     # ── Text output ────────────────────────────────────────────
@@ -81,8 +81,8 @@ def _run_compare(
 @click.argument("bundle_b", type=click.Path(exists=True))
 @click.option("--report", "-r", "report_dir", type=click.Path(), default=None,
               help="Output directory for reports.")
-@click.option("--format", "-f", "output_format", type=click.Choice(["text", "json"]),
-              default="text", help="Output format: text (default) or json.")
+@click.option("--format", "-f", "output_format", type=click.Choice(["text", "json", "diff"]),
+              default="text", help="Output format: text (default), json, or diff.")
 def compare(bundle_a: str, bundle_b: str, report_dir: str | None,
             output_format: str) -> None:
     """Compare two Trace Bundles and highlight differences."""
@@ -96,8 +96,8 @@ def compare(bundle_a: str, bundle_b: str, report_dir: str | None,
 @click.argument("bundle_b", type=click.Path(exists=True))
 @click.option("--report", "-r", "report_dir", type=click.Path(), default=None,
               help="Output directory for reports.")
-@click.option("--format", "-f", "output_format", type=click.Choice(["text", "json"]),
-              default="text", help="Output format: text (default) or json.")
+@click.option("--format", "-f", "output_format", type=click.Choice(["text", "json", "diff"]),
+              default="text", help="Output format: text (default), json, or diff.")
 def compare_legacy(bundle_a: str, bundle_b: str, report_dir: str | None,
                    output_format: str) -> None:
     """Compare two Trace Bundles (DEPRECATED — use ``qocc trace compare``)."""

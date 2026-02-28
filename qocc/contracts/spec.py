@@ -25,14 +25,14 @@ class ContractType(str, Enum):
     COST = "cost"
     QEC = "qec"
     ZNE = "zne"
+    QPT = "qpt"
+    TOPOLOGY_VIOLATIONS = "topology_violations"
 
     @classmethod
     def is_valid(cls, value: str) -> bool:
-        return value in cls._value2member_map_
-
+        return any(value == item.value for item in cls)
 
 VALID_CONTRACT_TYPES = frozenset(ct.value for ct in ContractType)
-
 
 @dataclass
 class ContractSpec:

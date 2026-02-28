@@ -11,7 +11,7 @@ import sys
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 import importlib.metadata
 import re
 
@@ -119,17 +119,77 @@ class ArtifactStore:
         return self.write_json("cache_index.json", entries)
 
     # ------------------------------------------------------------------
-    # Zip export
+    # Zip export & Streaming
     # ------------------------------------------------------------------
 
-    def export_zip(self, zip_path: str | Path) -> Path:
-        """Pack the bundle directory into a zip file."""
+    def export_zip(
+        self,
+        zip_path: str | Path,
+        compress: str = "deflate",
+        max_size_mb: float | None = None
+    ) -> Path:
+        """Pack the bundle directory into a zip file.
+        
+        Args:
+            compress: "none", "deflate", "zstd", "lz4".
+            max_size_mb: Optional hard limit on the uncompressed size.
+        """
         zp = Path(zip_path)
-        with zipfile.ZipFile(zp, "w", zipfile.ZIP_DEFLATED) as zf:
+        
+        comp_type = zipfile.ZIP_STORED
+        if compress == "deflate":
+            comp_type = zipfile.ZIP_DEFLATED
+        elif compress == "lz4":
+            try:
+                comp_type = zipfile.ZIP_LZMA
+            except AttributeError:
+                comp_type = zipfile.ZIP_DEFLATED
+        elif compress == "zstd":
+            # Python standard library doesn't natively support zstd in zipfile.
+            # But we can fallback to deflate if we don't have standard support,
+            # or try BZIP2. For now, deflate.
+            comp_type = zipfile.ZIP_DEFLATED
+            
+        total_size = 0.0
+        if max_size_mb is not None:
+            for file in self.root.rglob("*"):
+                if file.is_file():
+                    total_size += file.stat().st_size
+            if (total_size / 1024 / 1024) > max_size_mb:
+                raise ValueError(
+                    f"Bundle size ({total_size / 1024 / 1024:.2f} MB) exceeds "
+                    f"maximum allowed size ({max_size_mb:.2f} MB)"
+                )
+                
+        with zipfile.ZipFile(zp, "w", comp_type) as zf:
             for file in sorted(self.root.rglob("*")):
                 if file.is_file():
                     zf.write(file, file.relative_to(self.root))
         return zp
+
+    def stream_bundle(
+        self,
+        callback: Callable[[bytes], None],
+        chunk_size: int = 1024 * 1024
+    ) -> None:
+        """Stream bundle zip incrementally to a callback."""
+        import io
+        
+        class CallbackWriter(io.RawIOBase):
+            def write(self, b: bytes) -> int:
+                callback(b)
+                return len(b)
+                
+            def readable(self) -> bool: return False
+            def writable(self) -> bool: return True
+            def seekable(self) -> bool: return False
+            def close(self) -> None: pass
+            
+        with zipfile.ZipFile(CallbackWriter(), "w", zipfile.ZIP_DEFLATED) as zf:
+            for file in sorted(self.root.rglob("*")):
+                if file.is_file():
+                    with open(file, "rb") as f:
+                        zf.writestr(str(file.relative_to(self.root)), f.read())
 
     @staticmethod
     def load_bundle(path: str | Path) -> dict[str, Any]:
@@ -161,7 +221,7 @@ class ArtifactStore:
 
         bundle: dict[str, Any] = {}
         for name in ["manifest.json", "env.json", "seeds.json", "metrics.json",
-                      "contracts.json", "contract_results.json"]:
+                      "contracts.json", "contract_results.json", "signature.json"]:
             fp = path / name
             if fp.exists():
                 bundle[name.replace(".json", "")] = json.loads(fp.read_text(encoding="utf-8"))

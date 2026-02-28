@@ -251,3 +251,163 @@ def g_test(
         "df": k - 1,
         "williams_correction": q,
     }
+
+# ======================================================================
+# Robust Statistical Tests (Phase 18)
+# ======================================================================
+
+def kolmogorov_smirnov_test(
+    counts_a: dict[str, int],
+    counts_b: dict[str, int],
+    alpha: float = 0.05,
+) -> dict[str, Any]:
+    """Kolmogorov-Smirnov test between two count distributions.
+    
+    Converts bitstring distributions into CDFs. Assumes bitstrings are lexicographically ordered.
+    """
+    from scipy import stats  # type: ignore[import-untyped]
+    
+    keys = sorted(set(counts_a) | set(counts_b))
+    if not keys:
+        return {"statistic": 0.0, "p_value": 1.0, "passed": True}
+        
+    obs_a = np.array([counts_a.get(k, 0) for k in keys], dtype=float)
+    obs_b = np.array([counts_b.get(k, 0) for k in keys], dtype=float)
+    
+    total_a = obs_a.sum()
+    total_b = obs_b.sum()
+    if total_a == 0 or total_b == 0:
+        return {"statistic": 1.0, "p_value": 0.0, "passed": False}
+        
+    cdf_a = np.cumsum(obs_a / total_a)
+    cdf_b = np.cumsum(obs_b / total_b)
+    
+    # K-S statistic is the maximum absolute difference between the CDFs
+    d = float(np.max(np.abs(cdf_a - cdf_b)))
+    
+    # Calculate p-value using asymptotic distribution
+    en = np.sqrt(total_a * total_b / (total_a + total_b))
+    try:
+        p_value = float(stats.kstwobign.sf(en * d))
+    except (ImportError, AttributeError):
+        # Fallback approximation if scipy doesn't have kstwobign implementation
+        p_value = float(stats.kstwo.sf(d, np.round(en**2)))
+        
+    return {
+        "statistic": d,
+        "p_value": p_value,
+        "passed": bool(p_value > alpha)
+    }
+
+def jensen_shannon_divergence(
+    counts_a: dict[str, int],
+    counts_b: dict[str, int],
+) -> float:
+    """Jensen-Shannon divergence between two count distributions."""
+    from scipy.special import rel_entr # type: ignore[import-untyped]
+    
+    keys = sorted(set(counts_a) | set(counts_b))
+    if not keys:
+        return 0.0
+        
+    obs_a = np.array([counts_a.get(k, 0) for k in keys], dtype=float)
+    obs_b = np.array([counts_b.get(k, 0) for k in keys], dtype=float)
+    
+    total_a = obs_a.sum()
+    total_b = obs_b.sum()
+    
+    if total_a == 0 or total_b == 0:
+        return 1.0
+        
+    p = obs_a / total_a
+    q = obs_b / total_b
+    m = 0.5 * (p + q)
+    
+    # JSD = 0.5 * D_KL(P || M) + 0.5 * D_KL(Q || M)
+    jsd = 0.5 * np.sum(rel_entr(p, m)) + 0.5 * np.sum(rel_entr(q, m))
+    
+    return float(jsd)
+
+def permutation_test(
+    counts_a: dict[str, int],
+    counts_b: dict[str, int],
+    alpha: float = 0.05,
+    n_permutations: int = 1000,
+    seed: int = DEFAULT_SEED,
+) -> dict[str, Any]:
+    """Exact distribution non-parametric permutation test for equivalence."""
+    rng = np.random.default_rng(seed)
+    
+    total_a = sum(counts_a.values())
+    total_b = sum(counts_b.values())
+    if total_a == 0 or total_b == 0:
+        return {"statistic": 1.0, "p_value": 0.0, "passed": False}
+        
+    # Create flat arrays of categories
+    samples_a = []
+    for k, v in counts_a.items():
+        samples_a.extend([k] * v)
+        
+    samples_b = []
+    for k, v in counts_b.items():
+        samples_b.extend([k] * v)
+        
+    pooled = np.array(samples_a + samples_b)
+    
+    # We will use TVD as the test statistic
+    def stat_func(sa, sb):
+        ca, cb = {}, {}
+        for x in sa: ca[x] = ca.get(x, 0) + 1
+        for x in sb: cb[x] = cb.get(x, 0) + 1
+        return total_variation_distance(ca, cb)
+        
+    t_obs = stat_func(samples_a, samples_b)
+    
+    # Permute
+    count_exceed = 0
+    t_null = []
+    for _ in range(n_permutations):
+        perm = rng.permutation(pooled)
+        perm_a = perm[:total_a]
+        perm_b = perm[total_a:]
+        t_perm = stat_func(perm_a, perm_b)
+        t_null.append(t_perm)
+        if t_perm >= t_obs:
+            count_exceed += 1
+            
+    p_value = count_exceed / n_permutations
+    
+    return {
+        "statistic": t_obs,
+        "p_value": p_value,
+        "passed": bool(p_value > alpha)
+    }
+
+def fdr_correction(p_values: list[float], alpha: float = 0.05) -> list[bool]:
+    """Benjamini-Hochberg FDR correction for multiple hypothesis testing.
+    
+    Returns a list of booleans: True if the corresponding hypothesis is retained (passing contract),
+    False if it's rejected (failing contract).
+    """
+    n = len(p_values)
+    if n == 0:
+        return []
+        
+    # Sort p-values and keep original indices
+    sorted_pairs = sorted(enumerate(p_values), key=lambda x: x[1])
+    
+    # Find the largest k such that P_(k) <= (k/m) * alpha
+    k_max = -1
+    for k, (orig_idx, p_val) in enumerate(sorted_pairs, start=1):
+        if p_val <= (k / n) * alpha:
+            k_max = k
+            
+    # Everything before k_max including k_max is rejected, everything else is retained.
+    results = [True] * n
+    for i, (orig_idx, _) in enumerate(sorted_pairs):
+        if i < k_max:
+            results[orig_idx] = False # Rejected (Failed contract)
+        else:
+            results[orig_idx] = True # Retained (Passed contract)
+            
+    return results

@@ -19,7 +19,7 @@ import logging
 import threading
 import uuid
 from contextlib import contextmanager
-from typing import Any, Generator
+from typing import Any, Callable, Generator
 
 from qocc.trace.span import Span
 
@@ -36,11 +36,18 @@ class TraceEmitter:
         trace_id: The trace-level identifier (shared by all spans in a run).
     """
 
-    def __init__(self, trace_id: str | None = None) -> None:
+    def __init__(
+        self,
+        trace_id: str | None = None,
+        on_span_started: Callable[[Span], None] | None = None,
+        on_span_finished: Callable[[Span], None] | None = None,
+    ) -> None:
         self.trace_id: str = trace_id or uuid.uuid4().hex
         self._spans: list[Span] = []
         self._lock = threading.Lock()
         self._local = threading.local()
+        self.on_span_started = on_span_started
+        self.on_span_finished = on_span_finished
 
     @property
     def _active_span(self) -> Span | None:
@@ -71,6 +78,11 @@ class TraceEmitter:
             attributes=attributes or {},
         )
         logger.debug("span.start name=%s id=%s parent=%s", name, s.span_id[:8], parent_id and parent_id[:8])
+        if self.on_span_started:
+            try:
+                self.on_span_started(s)
+            except Exception as e:
+                logger.error("Error in on_span_started callback: %s", e)
         return s
 
     def finish_span(self, span: Span, status: str = "OK") -> None:
@@ -80,6 +92,11 @@ class TraceEmitter:
         with self._lock:
             self._spans.append(span)
         logger.debug("span.finish name=%s status=%s", span.name, status)
+        if self.on_span_finished:
+            try:
+                self.on_span_finished(span)
+            except Exception as e:
+                logger.error("Error in on_span_finished callback: %s", e)
 
     @contextmanager
     def span(
