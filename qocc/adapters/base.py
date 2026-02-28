@@ -307,5 +307,8 @@ def get_adapter(name: str) -> BaseAdapter:
         elif name == "ibm":
             from qocc.adapters.ibm_adapter import IBMAdapter  # noqa: F811
             return IBMAdapter()
+        elif name == "cudaq":
+            from qocc.adapters.cudaq_adapter import CudaqAdapter
+            return CudaqAdapter()
         raise KeyError(f"No adapter registered for {name!r}. Available: {list(_REGISTRY)}")
     return _REGISTRY[name]()

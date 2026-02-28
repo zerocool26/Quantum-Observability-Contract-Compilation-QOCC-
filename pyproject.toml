@@ -33,6 +33,7 @@ tket = ["pytket>=1.30"]
 stim = ["stim>=1.12", "pymatching>=2.0"]
 qec = ["stim>=1.12", "pymatching>=2.0"]
 ibm = ["qiskit>=1.0", "qiskit-ibm-runtime>=0.34"]
+cudaq = ["cudaq>=0.6"]
 jupyter = ["ipywidgets>=8.0", "plotly>=5.20"]
 signing = ["cryptography>=42.0"]
 otel = ["opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp-proto-grpc"]
@@ -51,6 +52,7 @@ qocc = "qocc.cli.main:cli"
 tket = "qocc.adapters.tket_adapter:TketAdapter"
 stim = "qocc.adapters.stim_adapter:StimAdapter"
 ibm = "qocc.adapters.ibm_adapter:IBMAdapter"
+cudaq = "qocc.adapters.cudaq_adapter:CudaqAdapter"
 
 [project.entry-points."qocc.evaluators"]
 qec = "qocc.contracts.eval_qec:evaluate_qec_contract"
